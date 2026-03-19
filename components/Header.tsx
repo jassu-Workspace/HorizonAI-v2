@@ -33,14 +33,21 @@ const Header: React.FC<HeaderProps> = ({
     };
 
     return (
-        <header className="text-center p-6 mb-8 relative z-10">
-            <h1 className="text-5xl md:text-6xl font-bold text-slate-900 dark:text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-                {title}
-            </h1>
-            <p className="mt-4 text-lg text-slate-600 dark:text-slate-300">
-                {subtitle}
-            </p>
-            <div className="absolute top-4 right-4 flex items-center gap-2">
+        <header className="p-3 sm:p-6 mb-4 sm:mb-8 relative z-10">
+            <div className="flex flex-col gap-3 sm:gap-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                        {showDashboardButton && (
+                            <button onClick={onShowDashboard} className="text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 transition-colors text-xs sm:text-sm flex items-center gap-1 border border-slate-200 dark:border-slate-600 rounded-full px-2.5 sm:px-3 py-1 bg-white/80 dark:bg-slate-800/80 font-medium shadow-sm">
+                                <ion-icon name="grid-outline"></ion-icon> My Dashboard
+                            </button>
+                        )}
+                        <button onClick={handleSignOut} className="text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-colors text-xs sm:text-sm flex items-center gap-1 border border-slate-200 dark:border-slate-600 rounded-full px-2.5 sm:px-3 py-1 bg-white/50 dark:bg-slate-800/50">
+                            <ion-icon name="log-out-outline"></ion-icon> Sign Out
+                        </button>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-end gap-2">
                  {/* Focus Mode Toggle (Emojis) */}
                  {onToggleEmojis && (
                     <button 
@@ -69,10 +76,10 @@ const Header: React.FC<HeaderProps> = ({
                 <div className="relative">
                     <button 
                         onClick={() => setDropdownOpen(prev => !prev)}
-                        className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-600 rounded-lg shadow-sm hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors h-10"
+                        className="flex items-center gap-2 px-2.5 sm:px-3 py-2 text-xs sm:text-sm font-medium text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-600 rounded-lg shadow-sm hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors h-10"
                     >
                         <ion-icon name="language-outline"></ion-icon>
-                        <span>{language}</span>
+                        <span className="max-w-[88px] sm:max-w-none truncate">{language}</span>
                         <ion-icon name="chevron-down-outline" className={`text-xs transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`}></ion-icon>
                     </button>
                     {isDropdownOpen && (
@@ -94,17 +101,17 @@ const Header: React.FC<HeaderProps> = ({
                         </div>
                     )}
                 </div>
-            </div>
-            
-            <div className="absolute top-4 left-4 flex gap-2">
-                 {showDashboardButton && (
-                     <button onClick={onShowDashboard} className="text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 transition-colors text-sm flex items-center gap-1 border border-slate-200 dark:border-slate-600 rounded-full px-3 py-1 bg-white/80 dark:bg-slate-800/80 font-medium shadow-sm">
-                         <ion-icon name="grid-outline"></ion-icon> My Dashboard
-                     </button>
-                 )}
-                 <button onClick={handleSignOut} className="text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-colors text-sm flex items-center gap-1 border border-slate-200 dark:border-slate-600 rounded-full px-3 py-1 bg-white/50 dark:bg-slate-800/50">
-                     <ion-icon name="log-out-outline"></ion-icon> Sign Out
-                 </button>
+                    </div>
+                </div>
+
+                <div className="text-center px-1">
+                    <h1 className="text-3xl sm:text-5xl md:text-6xl font-bold text-slate-900 dark:text-white leading-tight break-words" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+                        {title}
+                    </h1>
+                    <p className="mt-2 sm:mt-4 text-base sm:text-lg text-slate-600 dark:text-slate-300 max-w-2xl mx-auto">
+                        {subtitle}
+                    </p>
+                </div>
             </div>
         </header>
     );

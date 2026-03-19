@@ -9,7 +9,18 @@ import { UserProfile, Suggestion, RoadmapData, QuizQuestion, RapidQuestion, Flas
  */
 
 // API Proxy Server URL
-const API_BASE = import.meta.env.VITE_API_PROXY_BASE || `${window.location.origin}/api`;
+// In production, avoid using localhost values baked from build-time .env.
+const configuredApiBase = String(import.meta.env.VITE_API_PROXY_BASE || '').trim();
+const configuredPointsToLocalhost = /(^|\/\/)(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(configuredApiBase);
+const browserIsLocalhost = /^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname);
+const normalizeApiBase = (base: string) => base.replace(/\/+$/, '');
+const API_BASE_CANDIDATES = Array.from(new Set([
+  ...(configuredApiBase && (!configuredPointsToLocalhost || browserIsLocalhost)
+    ? [normalizeApiBase(configuredApiBase)]
+    : []),
+  normalizeApiBase(`${window.location.origin}/api`),
+  '/api',
+]));
 
 /**
  * Make API calls through local proxy server
@@ -19,28 +30,44 @@ const callNvidiaAPI = async (
     model: string = 'meta/llama-3.1-405b-instruct',
     temperature: number = 0.3,
   topP: number = 0.7,
-): Promise<string> => {
+): Promise<string> => {   
     let retries = 3;
     let lastError: any = null;
 
     while (retries > 0) {
         try {
-            const response = await fetch(`${API_BASE}/chat`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  model,
-                    messages: [{ role: 'user', content: prompt }],
-                    temperature,
-                  top_p: topP,
-                    max_tokens: 4096,
-                })
-            });
+            let response: Response | null = null;
+            let networkError: any = null;
+
+            for (const apiBase of API_BASE_CANDIDATES) {
+                try {
+                    response = await fetch(`${apiBase}/chat`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                          model,
+                            messages: [{ role: 'user', content: prompt }],
+                            temperature,
+                          top_p: topP,
+                            max_tokens: 4096,
+                        })
+                    });
+                    networkError = null;
+                    break;
+                } catch (fetchErr: any) {
+                    networkError = fetchErr;
+                    lastError = fetchErr;
+                }
+            }
+
+            if (!response) {
+                throw networkError || new Error('Network request failed');
+            }
 
             if (!response.ok) {
-                const error = await response.json();
+                const error = await response.json().catch(() => ({}));
               const message = error.error || `HTTP ${response.status}: ${response.statusText}`;
 
               // GLM fallback: if key-1 model is unavailable on provider side, degrade to key-2 Llama route.

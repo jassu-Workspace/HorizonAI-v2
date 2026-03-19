@@ -119,13 +119,13 @@ const ConfigureRoadmap: React.FC<ConfigureRoadmapProps & { interestDomain: strin
 
     if (error) {
         return (
-             <div className="glass-card p-10 max-w-2xl mx-auto mt-8 text-center">
+             <div className="glass-card p-6 sm:p-10 max-w-2xl mx-auto mt-8 text-center">
                 <div className="text-red-500 text-5xl mb-4"><ion-icon name="alert-circle"></ion-icon></div>
                 <h3 className="text-xl font-bold text-slate-800 mb-2">Connection Issue</h3>
                 <p className="text-slate-600 mb-6">{error}</p>
-                <div className="flex gap-4 justify-center">
-                    <button onClick={loadAssessment} className="dynamic-button">Retry</button>
-                    <button onClick={handleSkip} className="px-6 py-2 border border-slate-300 rounded-full text-slate-600 hover:bg-slate-50">Skip & Start Beginner Path</button>
+                <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center">
+                    <button onClick={loadAssessment} className="dynamic-button w-full sm:w-auto">Retry</button>
+                    <button onClick={handleSkip} className="w-full sm:w-auto px-6 py-2 border border-slate-300 rounded-full text-slate-600 hover:bg-slate-50">Skip & Start Beginner Path</button>
                 </div>
             </div>
         );
@@ -160,7 +160,7 @@ const ConfigureRoadmap: React.FC<ConfigureRoadmapProps & { interestDomain: strin
 
     return (
         <div className="glass-card p-6 md:p-10 max-w-3xl mx-auto mt-8 relative animate-fadeIn">
-            <div className="flex justify-between items-center mb-6">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-6">
                 <h2 className="text-xl font-bold text-slate-900">Rapid Assessment</h2>
                 <div className={`font-mono font-bold text-lg px-3 py-1 rounded-lg ${timer < 60 ? 'bg-red-100 text-red-600 animate-pulse' : 'bg-slate-100 text-slate-700'}`}>
                     {formatTime(timer)}
@@ -192,17 +192,17 @@ const ConfigureRoadmap: React.FC<ConfigureRoadmapProps & { interestDomain: strin
                 </div>
             </div>
 
-            <div className="flex justify-between items-center pt-6 border-t border-slate-100">
+            <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3 pt-6 border-t border-slate-100">
                 <button 
                     onClick={onBack} 
-                    className="text-slate-500 hover:text-slate-800 text-sm font-semibold"
+                    className="text-slate-500 hover:text-slate-800 text-sm font-semibold text-left"
                 >
                     Cancel
                 </button>
                 <button 
                     onClick={handleNext} 
                     disabled={!selectedAnswers[currentQuestionIndex]}
-                    className="dynamic-button !py-2 !px-8 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="dynamic-button !py-2 !px-8 w-full sm:w-auto disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     {currentQuestionIndex === questions.length - 1 ? 'Finish' : 'Next'}
                 </button>

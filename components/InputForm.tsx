@@ -60,7 +60,7 @@ const InputForm: React.FC<InputFormProps> = ({ existingProfile, onSubmit, title 
                 </div>
                 
                 <div className="mt-8 text-center">
-                    <button type="submit" className="dynamic-button">
+                    <button type="submit" className="dynamic-button w-full sm:w-auto">
                         Start Assessment & Generate Path
                     </button>
                 </div>

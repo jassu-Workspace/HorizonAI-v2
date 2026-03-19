@@ -540,7 +540,7 @@ const App: React.FC = () => {
                         showEmojis={showEmojis}
                     />
                 )}
-                <main className="flex-grow container mx-auto px-4 pb-8">
+                <main className="flex-grow container mx-auto px-3 sm:px-4 pb-8">
                     <Routes>
                         <Route path="/auth" element={<Auth onAuthSuccess={handleAuthSuccess} onGuestAccess={handleGuestAccess} />} />
                         <Route path="/onboarding" element={<Onboarding onComplete={handleOnboardingComplete} />} />
@@ -584,9 +584,9 @@ const App: React.FC = () => {
                         } />
                         <Route path="/loading" element={<Loader message="Working our magic..." />} />
                         <Route path="/error" element={
-                            <div className="text-center">
+                            <div className="text-center px-2">
                                 <p className="text-red-500 font-semibold bg-red-100 p-4 rounded-lg">{errorMessage}</p>
-                                <button onClick={handleStartOver} className="dynamic-button mt-4">Try Again</button>
+                                <button onClick={handleStartOver} className="dynamic-button mt-4 w-full sm:w-auto">Try Again</button>
                             </div>
                         } />
                         {/* Default Redirect */}
