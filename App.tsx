@@ -33,6 +33,7 @@ import ProfileEditModal from './components/ProfileEditModal';
 import ImportModal from './components/ImportModal';
 import ShareModal from './components/ShareModal';
 import WeekAssessmentModal from './components/WeekAssessmentModal';
+import LandingPage from './components/landing/LandingPage';
 
 const translations = {
     'English': {
@@ -178,7 +179,7 @@ const App: React.FC = () => {
                 if (profile) {
                     setUserProfile(profile);
                     
-                    if (location.pathname === '/' || location.pathname === '/auth') {
+                    if (location.pathname === '/auth') {
                         if (profile.role === 'trainer' || profile.role === 'policymaker') {
                             navigate('/dashboard');
                         } else {
@@ -194,7 +195,7 @@ const App: React.FC = () => {
                 }
             } else {
                  // If not logged in and not on a public path, redirect to auth
-                 if (location.pathname !== '/auth' && !location.search.includes('roadmapId')) {
+                      if (location.pathname !== '/auth' && location.pathname !== '/' && !location.search.includes('roadmapId')) {
                     navigate('/auth');
                  }
             }
@@ -522,7 +523,7 @@ const App: React.FC = () => {
             <IntroOverlay isVisible={isIntroVisible} />
             
             <div className={`flex-grow flex flex-col transition-opacity duration-500 ${isIntroVisible ? 'opacity-0' : 'opacity-100'} relative z-10`}>
-                {location.pathname !== '/auth' && location.pathname !== '/onboarding' && (
+                {location.pathname !== '/auth' && location.pathname !== '/onboarding' && location.pathname !== '/' && (
                     <Header 
                         language={language} 
                         onLanguageChange={(lang) => setLanguage(lang as keyof typeof translations)} 
@@ -589,8 +590,15 @@ const App: React.FC = () => {
                                 <button onClick={handleStartOver} className="dynamic-button mt-4 w-full sm:w-auto">Try Again</button>
                             </div>
                         } />
-                        {/* Default Redirect */}
-                        <Route path="/" element={<div />} /> 
+                        <Route path="/" element={
+                            <LandingPage
+                                theme={theme}
+                                onToggleTheme={toggleTheme}
+                                onGetStarted={() => navigate('/auth')}
+                                onExploreRoadmaps={() => navigate('/create')}
+                                onGoToAuth={() => navigate('/auth')}
+                            />
+                        } />
                         <Route path="*" element={<Navigate to="/" />} />
                     </Routes>
                 </main>

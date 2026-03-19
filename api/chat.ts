@@ -99,6 +99,23 @@ const pickNextKey = (forModel: string): KeyState | null => {
     return available.sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0] || null;
 };
 
+const pickAnyAvailableKey = (): KeyState | null => {
+    const available = getAvailableKeys();
+    if (available.length === 0) return null;
+
+    for (let i = 0; i < available.length; i++) {
+        const idx = (roundRobinPointer + i) % available.length;
+        const candidate = available[idx];
+        if (Date.now() >= candidate.cooldownUntil) {
+            roundRobinPointer = (idx + 1) % available.length;
+            candidate.lastUsedAt = Date.now();
+            return candidate;
+        }
+    }
+
+    return available.sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0] || null;
+};
+
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const createClientForKey = (apiKey: string) => new OpenAI({
@@ -139,7 +156,7 @@ export default async function handler(req: any, res: any) {
         const maxAttempts = Math.max(1, MAX_RETRIES_PER_REQUEST);
 
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            const keyState = pickNextKey(requestedModel);
+            const keyState = pickNextKey(requestedModel) || pickAnyAvailableKey();
 
             if (!keyState) {
                 const soonest = Math.min(...keyPool.map(k => k.cooldownUntil));
@@ -166,7 +183,7 @@ export default async function handler(req: any, res: any) {
                 if (requestedModel === 'z-ai/glm4.7' && isNotFoundError(error)) {
                     try {
                         const fallbackModel = 'meta/llama-3.1-405b-instruct';
-                        const fallbackKeyState = pickNextKey(fallbackModel);
+                        const fallbackKeyState = pickNextKey(fallbackModel) || pickAnyAvailableKey();
                         if (fallbackKeyState) {
                             const fallbackClient = createClientForKey(fallbackKeyState.key);
                             const completion = await fallbackClient.chat.completions.create({
