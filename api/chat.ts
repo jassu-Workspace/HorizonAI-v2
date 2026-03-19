@@ -1,0 +1,212 @@
+import OpenAI from 'openai';
+
+const NVIDIA_BASE_URL = process.env.NVIDIA_API_BASE || 'https://integrate.api.nvidia.com/v1';
+const RATE_LIMIT_COOLDOWN_MS = Number(process.env.NVIDIA_KEY_RATE_LIMIT_COOLDOWN_MS || 65000);
+const ERROR_COOLDOWN_MS = Number(process.env.NVIDIA_KEY_ERROR_COOLDOWN_MS || 8000);
+const MAX_RETRIES_PER_REQUEST = Number(process.env.NVIDIA_KEY_MAX_RETRIES || 6);
+
+type KeyState = {
+    slot: number;
+    key: string;
+    label: string;
+    cooldownUntil: number;
+    failures: number;
+    lastUsedAt: number;
+};
+
+const keyPool: KeyState[] = [
+    { slot: 1, key: (process.env.NVIDIA_API_KEY_1 || '').trim(), label: 'key-1' },
+    { slot: 2, key: (process.env.NVIDIA_API_KEY_2 || '').trim(), label: 'key-2' },
+    { slot: 3, key: (process.env.NVIDIA_API_KEY_3 || '').trim(), label: 'key-3' },
+    { slot: 0, key: (process.env.NVIDIA_API_KEY || '').trim(), label: 'key-default' },
+]
+    .filter(item => Boolean(item.key))
+    .map(item => ({
+        ...item,
+        cooldownUntil: 0,
+        failures: 0,
+        lastUsedAt: 0,
+    }));
+
+const MODEL_TO_KEY_SLOT: Record<string, 1 | 2 | 3> = {
+    'glm-4.7': 1,
+    'z-ai/glm4.7': 1,
+    'z.ai/glm4.7': 1,
+    'z.ai glm 4.7': 1,
+    'meta/llama-3.1-405b-instruct': 2,
+    'mistralai/mistral-7b-instruct-v0.2': 3,
+};
+
+let roundRobinPointer = 0;
+
+const normalizeModelName = (model: string): string => {
+    const normalized = String(model || '').trim().toLowerCase();
+
+    if (
+        normalized === 'z-ai/glm4.7' ||
+        normalized === 'z.ai/glm4.7' ||
+        normalized === 'z.ai glm 4.7' ||
+        normalized === 'glm-4.7'
+    ) {
+        return 'z-ai/glm4.7';
+    }
+
+    if (normalized === 'meta/llama-3.1-405b-instruct') {
+        return 'meta/llama-3.1-405b-instruct';
+    }
+
+    if (normalized === 'mistralai/mistral-7b-instruct-v0.2') {
+        return 'mistralai/mistral-7b-instruct-v0.2';
+    }
+
+    return model;
+};
+
+const isRateLimitError = (error: any): boolean => {
+    const message = String(error?.message || '').toLowerCase();
+    const status = Number(error?.status || error?.code || 0);
+    return status === 429 || message.includes('429') || message.includes('rate limit') || message.includes('too many requests');
+};
+
+const isNotFoundError = (error: any): boolean => {
+    const message = String(error?.message || '').toLowerCase();
+    const status = Number(error?.status || error?.code || 0);
+    return status === 404 || message.includes('404') || message.includes('not found');
+};
+
+const getAvailableKeys = (): KeyState[] => {
+    const now = Date.now();
+    return keyPool.filter(k => now >= k.cooldownUntil);
+};
+
+const pickNextKey = (forModel: string): KeyState | null => {
+    const mappedSlot = MODEL_TO_KEY_SLOT[forModel];
+    if (!mappedSlot) return null;
+
+    const available = getAvailableKeys().filter(k => k.slot === mappedSlot);
+    if (available.length === 0) return null;
+
+    for (let i = 0; i < available.length; i++) {
+        const idx = (roundRobinPointer + i) % available.length;
+        const candidate = available[idx];
+        if (Date.now() >= candidate.cooldownUntil) {
+            roundRobinPointer = (idx + 1) % available.length;
+            candidate.lastUsedAt = Date.now();
+            return candidate;
+        }
+    }
+
+    return available.sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0] || null;
+};
+
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const createClientForKey = (apiKey: string) => new OpenAI({
+    apiKey,
+    baseURL: NVIDIA_BASE_URL,
+});
+
+const summarizeKeyHealth = () => keyPool.map(k => ({
+    label: k.label,
+    inCooldown: Date.now() < k.cooldownUntil,
+    failures: k.failures,
+}));
+
+export default async function handler(req: any, res: any) {
+    if (req.method !== 'POST') {
+        return res.status(405).json({ error: 'Method Not Allowed' });
+    }
+
+    try {
+        const { model, messages, temperature, top_p, max_tokens } = req.body || {};
+        const requestedModel = normalizeModelName(model);
+
+        if (!requestedModel || !messages) {
+            return res.status(400).json({ error: 'Missing required fields: model, messages' });
+        }
+
+        if (!MODEL_TO_KEY_SLOT[requestedModel]) {
+            return res.status(400).json({
+                error: `Unsupported model '${model}'. Allowed models: z-ai/glm4.7, meta/llama-3.1-405b-instruct, mistralai/mistral-7b-instruct-v0.2`,
+            });
+        }
+
+        if (keyPool.length === 0) {
+            return res.status(500).json({ error: 'NVIDIA API keys not configured on server' });
+        }
+
+        let lastError: any = null;
+        const maxAttempts = Math.max(1, MAX_RETRIES_PER_REQUEST);
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            const keyState = pickNextKey(requestedModel);
+
+            if (!keyState) {
+                const soonest = Math.min(...keyPool.map(k => k.cooldownUntil));
+                const waitMs = Math.max(300, soonest - Date.now());
+                await wait(waitMs);
+                continue;
+            }
+
+            try {
+                const client = createClientForKey(keyState.key);
+                const completion = await client.chat.completions.create({
+                    model: requestedModel,
+                    messages,
+                    temperature: temperature || 0.3,
+                    top_p: top_p || 0.7,
+                    max_tokens: max_tokens || 4096,
+                    response_format: { type: 'json_object' },
+                });
+
+                keyState.failures = 0;
+                keyState.cooldownUntil = 0;
+                return res.status(200).json(completion);
+            } catch (error: any) {
+                if (requestedModel === 'z-ai/glm4.7' && isNotFoundError(error)) {
+                    try {
+                        const fallbackModel = 'meta/llama-3.1-405b-instruct';
+                        const fallbackKeyState = pickNextKey(fallbackModel);
+                        if (fallbackKeyState) {
+                            const fallbackClient = createClientForKey(fallbackKeyState.key);
+                            const completion = await fallbackClient.chat.completions.create({
+                                model: fallbackModel,
+                                messages,
+                                temperature: temperature || 0.3,
+                                top_p: top_p || 0.7,
+                                max_tokens: max_tokens || 4096,
+                                response_format: { type: 'json_object' },
+                            });
+
+                            fallbackKeyState.failures = 0;
+                            fallbackKeyState.cooldownUntil = 0;
+                            return res.status(200).json(completion);
+                        }
+                    } catch (fallbackError: any) {
+                        lastError = fallbackError;
+                    }
+                }
+
+                lastError = error;
+                keyState.failures += 1;
+
+                if (isRateLimitError(error)) {
+                    keyState.cooldownUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;
+                } else {
+                    keyState.cooldownUntil = Date.now() + ERROR_COOLDOWN_MS;
+                }
+            }
+        }
+
+        return res.status(503).json({
+            error: lastError?.message || 'All NVIDIA API keys failed for this request.',
+            details: `Mapped key for model '${requestedModel}' is exhausted or cooling down. Retry shortly.`,
+            keyHealth: summarizeKeyHealth(),
+        });
+    } catch (error: any) {
+        return res.status(500).json({
+            error: error?.message || 'API request failed',
+            details: error?.error?.message || '',
+        });
+    }
+}

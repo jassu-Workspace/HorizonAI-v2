@@ -9,7 +9,7 @@ import { UserProfile, Suggestion, RoadmapData, QuizQuestion, RapidQuestion, Flas
  */
 
 // API Proxy Server URL
-const API_BASE = import.meta.env.VITE_API_PROXY_BASE || 'http://localhost:3004/api';
+const API_BASE = import.meta.env.VITE_API_PROXY_BASE || `${window.location.origin}/api`;
 
 /**
  * Make API calls through local proxy server
