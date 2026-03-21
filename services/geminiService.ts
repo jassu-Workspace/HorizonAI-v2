@@ -1,4 +1,5 @@
 import { UserProfile, Suggestion, RoadmapData, QuizQuestion, RapidQuestion, Flashcard, Project, Toughness, JobTrendData, AcademicSuggestion, TimelineEvent, OfflineCenter, Career, StudyPlanItem, SetupStep, RealWorldScenario, ConceptConnection, Debate, CareerRecommendation, RoadmapWeek, ProjectDetails, CareerDetails, MockInterview, FocusArea, ResumeAnalysis } from '../types';
+import { supabase } from './supabaseService';
 
 /**
  * NVIDIA BUILD API SERVICE (via Local Proxy)
@@ -31,6 +32,16 @@ const callNvidiaAPI = async (
     temperature: number = 0.3,
   topP: number = 0.7,
 ): Promise<string> => {   
+  if (prompt.length > 12000) {
+    throw new Error('Prompt is too large. Please reduce input size.');
+  }
+
+  const { data: { session } } = await supabase.auth.getSession();
+  const accessToken = session?.access_token;
+  if (!accessToken) {
+    throw new Error('Please sign in to use AI features.');
+  }
+
     let retries = 3;
     let lastError: any = null;
 
@@ -45,6 +56,7 @@ const callNvidiaAPI = async (
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${accessToken}`,
                         },
                         body: JSON.stringify({
                           model,
@@ -140,7 +152,7 @@ const MODEL_BY_TASK = {
 const generateComprehensiveUserContext = (profile: UserProfile): string => {
     const parts = [
         `**Name**: ${profile.fullName || 'The User'}`,
-      `**Role**: ${profile.role || 'learner'}`,
+      `**Role**: ${profile.role || 'user'}`,
         `**Current Academic Stage**: ${profile.academicLevel}`,
         `**Stream/Field**: ${profile.stream}`,
         `**Primary Focus/Goal**: ${profile.focusArea}`,

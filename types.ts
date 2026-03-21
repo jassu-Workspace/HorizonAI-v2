@@ -10,7 +10,7 @@ declare global {
     }
 }
 
-export type UserRole = 'learner' | 'trainer' | 'policymaker';
+export type UserRole = 'user' | 'trainer' | 'admin';
 
 export interface Suggestion {
   name: string;

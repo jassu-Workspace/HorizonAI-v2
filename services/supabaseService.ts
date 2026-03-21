@@ -45,6 +45,7 @@ if (!isSupabaseConfigured) {
 } else {
     supabase = createClient(supabaseUrl, supabaseKey, {
         auth: {
+            storageKey: 'horizon.auth.v1',
             persistSession: true,
             autoRefreshToken: true,
         }
@@ -107,10 +108,18 @@ export const getCurrentProfile = async (): Promise<UserProfile | null> => {
 
         if (error || !data) return null;
 
+        const roleMap: Record<string, 'user' | 'trainer' | 'admin'> = {
+            learner: 'user',
+            user: 'user',
+            trainer: 'trainer',
+            policymaker: 'admin',
+            admin: 'admin',
+        };
+
         return {
             id: user.id,
             fullName: data.full_name,
-            role: data.role || 'learner', // Read Role
+            role: roleMap[String(data.role || 'user').toLowerCase()] || 'user',
             academicLevel: data.academic_level,
             stream: data.stream,
             academicCourse: data.academic_course, // Map DB column to profile type
@@ -139,13 +148,12 @@ export const saveProfileFromOnboarding = async (profile: UserProfile) => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error("User not authenticated.");
 
-    // Retrieve role from metadata if it was set during signup
-    const userRole = user.user_metadata?.role || 'learner';
+    const userRole: 'user' = 'user';
 
     const profileData = {
         id: user.id,
         full_name: profile.fullName,
-        role: userRole, // Save the role
+        role: userRole,
         academic_level: profile.academicLevel,
         stream: profile.stream,
         academic_course: profile.academicCourse, // Store Branch here
@@ -256,7 +264,27 @@ export const uploadResume = async (file: File): Promise<string> => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error("User not authenticated.");
 
-    const fileExt = file.name.split('.').pop();
+    const allowedMimeTypes = new Set([
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ]);
+    const allowedExtensions = new Set(['pdf', 'doc', 'docx']);
+    const maxFileSizeBytes = 5 * 1024 * 1024;
+
+    const fileExt = (file.name.split('.').pop() || '').toLowerCase();
+    if (!allowedExtensions.has(fileExt)) {
+        throw new Error('Unsupported file type. Allowed: PDF, DOC, DOCX.');
+    }
+
+    if (!allowedMimeTypes.has(file.type)) {
+        throw new Error('Invalid MIME type for resume upload.');
+    }
+
+    if (file.size > maxFileSizeBytes) {
+        throw new Error('File too large. Maximum allowed size is 5 MB.');
+    }
+
     const filePath = `${user.id}/resume.${fileExt}`;
 
     const { error } = await supabase.storage
@@ -612,4 +640,12 @@ export const saveQuizResult = async (result: QuizResult) => {
 
 export const signOut = async () => {
     await supabase.auth.signOut();
+    localStorage.removeItem('horizon.auth.v1');
+    localStorage.removeItem('horizon.activeRoadmapJobId');
+    localStorage.removeItem('horizon.workflowStep');
+    Object.keys(localStorage).forEach((key) => {
+        if (key.startsWith('sb-') && key.includes('-auth-token')) {
+            localStorage.removeItem(key);
+        }
+    });
 };

@@ -18,12 +18,12 @@
 import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
-import { buildInternalAuthHeaders } from './internal-auth';
 
 // Phase 2 Elite modules
-import { updateAbuseScore, initRedis } from './redis-ratelimit';
-import { generateDeviceFingerprint, detectDeviceAnomalies, deviceTracker } from './device-fingerprinting';
-import { detectAbuseSignals, analyzeCostPattern, promptHistory } from './behavioral-analysis';
+import { checkDistributedRateLimit, checkMultiLevelRateLimit, checkDailyQuota, updateAbuseScore, initRedis } from './redis-ratelimit';
+import { generateDeviceFingerprint, detectDeviceAnomalies, detectGeographicalImpossibility, deviceTracker } from './device-fingerprinting';
+import { detectAbuseSignals, analyzeCostPattern, checkPromptSimilarity, promptHistory, ngramSimilarity } from './behavioral-analysis';
+import { requestMalwareScan } from './malware-scanner';
 
 // Constants
 const NVIDIA_BASE_URL = process.env.NVIDIA_API_BASE || 'https://integrate.api.nvidia.com/v1';
@@ -50,7 +50,7 @@ const ABUSE_SCORE_BLOCK_THRESHOLD = Number(process.env.AI_ABUSE_SCORE_BLOCK || 7
 const ABUSE_SCORE_BAN_THRESHOLD = Number(process.env.AI_ABUSE_SCORE_BAN || 90);
 
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
     .split(',')
@@ -244,46 +244,6 @@ const readAuthToken = (req: any): string | null => {
     return token || null;
 };
 
-const getInternalApiBase = (req: any): string => {
-    const configured = String(process.env.INTERNAL_API_BASE_URL || '').trim();
-    if (configured) {
-        return configured.replace(/\/+$/, '');
-    }
-
-    const proto = String(req.headers['x-forwarded-proto'] || 'https');
-    const host = String(req.headers.host || '');
-    if (!host) return '';
-    return `${proto}://${host}`;
-};
-
-const callInternalRateLimit = async (
-    req: any,
-    payload: { ip: string; userId: string; deviceFingerprint: string },
-) => {
-    const baseUrl = getInternalApiBase(req);
-    if (!baseUrl) {
-        return null;
-    }
-
-    const path = '/api/internal/ratelimit';
-    const body = JSON.stringify(payload);
-    const headers = buildInternalAuthHeaders('POST', path, body);
-    const response = await fetch(`${baseUrl}${path}`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            ...headers,
-        },
-        body,
-    });
-
-    if (!response.ok) {
-        return null;
-    }
-
-    return response.json();
-};
-
 const scrubText = (text: string): string => {
     return text
         .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[REDACTED_EMAIL]')
@@ -304,22 +264,10 @@ const estimateTokens = (messages: Array<{ content: string }>) => {
     return Math.ceil(totalChars / 4);
 };
 
-const getSupabaseAuthClient = () => {
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
-    return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+const getSupabaseAdmin = () => {
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return null;
+    return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
         auth: { persistSession: false, autoRefreshToken: false },
-    });
-};
-
-const getSupabaseUserClient = (accessToken: string) => {
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
-    return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-        auth: { persistSession: false, autoRefreshToken: false },
-        global: {
-            headers: {
-                Authorization: `Bearer ${accessToken}`,
-            },
-        },
     });
 };
 
@@ -334,7 +282,7 @@ type DailyUsageRow = {
     blocked_until: string | null;
 };
 
-const getUsageRow = async (supabase: ReturnType<typeof getSupabaseUserClient>, userId: string): Promise<DailyUsageRow | null> => {
+const getUsageRow = async (supabase: ReturnType<typeof getSupabaseAdmin>, userId: string): Promise<DailyUsageRow | null> => {
     const client = supabase;
     if (!client) return null;
 
@@ -355,7 +303,7 @@ const getUsageRow = async (supabase: ReturnType<typeof getSupabaseUserClient>, u
 };
 
 const saveUsage = async (
-    supabase: ReturnType<typeof getSupabaseUserClient>,
+    supabase: ReturnType<typeof getSupabaseAdmin>,
     userId: string,
     estimatedTokens: number,
     blockedUntil: string | null,
@@ -424,23 +372,19 @@ export default async function handler(req: any, res: any) {
             return res.status(401).json({ error: 'Authentication required' });
         }
 
-        const supabaseAuth = getSupabaseAuthClient();
-        if (!supabaseAuth) {
+        const supabaseAdmin = getSupabaseAdmin();
+        if (!supabaseAdmin) {
             logSecurityEvent('chat_supabase_missing', { requestId });
             return res.status(503).json({ error: 'Service temporarily unavailable' });
         }
 
-        const { data: authData, error: authError } = await supabaseAuth.auth.getUser(token);
+        const { data: authData, error: authError } = await supabaseAdmin.auth.getUser(token);
         if (authError || !authData.user) {
             logSecurityEvent('chat_invalid_token', { requestId, ip, reason: authError?.message || 'no_user' });
             return res.status(401).json({ error: 'Invalid session' });
         }
 
         const userId = authData.user.id;
-        const supabaseUser = getSupabaseUserClient(token);
-        if (!supabaseUser) {
-            return res.status(503).json({ error: 'Service temporarily unavailable' });
-        }
 
         // Layer 3: Device Fingerprinting + Anomaly Detection
         const deviceFingerprint = generateDeviceFingerprint({
@@ -477,33 +421,28 @@ export default async function handler(req: any, res: any) {
 
         // Layer 4: Distributed Multi-Level Rate Limiting (Redis)
         await initRedis();
-        const rlCheck = await callInternalRateLimit(req, {
+        const rlCheck = await checkMultiLevelRateLimit(
             ip,
             userId,
             deviceFingerprint,
-        });
+            MAX_REQUESTS_PER_5_MIN_IP,
+            MAX_REQUESTS_PER_5_MIN_USER,
+            MAX_REQUESTS_PER_5_MIN_DEVICE,
+        );
 
-                if (!rlCheck || !rlCheck.combined) {
-                        const failingLevel = !rlCheck
-                                ? 'service'
-                                : !rlCheck.ip.allowed
-                                    ? 'ip'
-                                    : !rlCheck.user.allowed
-                                        ? 'user'
-                                        : 'device';
-                        const retryAfterMs = !rlCheck
-                                ? 60_000
-                                : failingLevel === 'ip'
-                                    ? rlCheck.ip.retryAfter
-                                    : failingLevel === 'user'
-                                        ? rlCheck.user.retryAfter
-                                        : rlCheck.device.retryAfter;
+        if (!rlCheck.combined) {
+            const failingLevel = !rlCheck.ip.allowed ? 'ip' : !rlCheck.user.allowed ? 'user' : 'device';
             logSecurityEvent('chat_rate_limited', {
                 requestId,
                 userId,
                 ip,
                 level: failingLevel,
-                                retryAfterMs,
+                retryAfterMs: 
+                    failingLevel === 'ip'
+                        ? rlCheck.ip.retryAfter
+                        : failingLevel === 'user'
+                          ? rlCheck.user.retryAfter
+                          : rlCheck.device.retryAfter,
             });
 
             // Progressive penalty
@@ -514,7 +453,12 @@ export default async function handler(req: any, res: any) {
 
             return res.status(429).json({
                 error: 'Too many requests',
-                retryAfterMs,
+                retryAfterMs:
+                    failingLevel === 'ip'
+                        ? rlCheck.ip.retryAfter
+                        : failingLevel === 'user'
+                          ? rlCheck.user.retryAfter
+                          : rlCheck.device.retryAfter,
             });
         }
 
@@ -572,7 +516,7 @@ export default async function handler(req: any, res: any) {
         promptHistory.addPrompt(userId, sanitizedMessages.map(m => m.content).join('\n'));
 
         // Layer 7: Cost Pattern Detection (hourly + daily quotas)
-        const usage = await getUsageRow(supabaseUser, userId);
+        const usage = await getUsageRow(supabaseAdmin, userId);
         if (usage?.blocked_until && Date.parse(usage.blocked_until) > Date.now()) {
             logSecurityEvent('chat_access_temporarily_restricted', { requestId, userId });
             return res.status(429).json({ error: 'Access temporarily restricted' });
@@ -646,7 +590,7 @@ export default async function handler(req: any, res: any) {
                 keyState.cooldownUntil = 0;
 
                 const providerUsageTokens = Number((completion as any)?.usage?.total_tokens || 0) || estimatedTotalTokens;
-                await saveUsage(supabaseUser, userId, providerUsageTokens, null);
+                await saveUsage(supabaseAdmin, userId, providerUsageTokens, null);
 
                 // Store device access for geographic anomaly detection
                 deviceTracker.addAccess(userId, {
@@ -686,7 +630,7 @@ export default async function handler(req: any, res: any) {
                             fallbackKeyState.cooldownUntil = 0;
 
                             const providerUsageTokens = Number((completion as any)?.usage?.total_tokens || 0) || estimatedTotalTokens;
-                            await saveUsage(supabaseUser, userId, providerUsageTokens, null);
+                            await saveUsage(supabaseAdmin, userId, providerUsageTokens, null);
 
                             logSecurityEvent('chat_success_via_fallback', {
                                 requestId,

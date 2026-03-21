@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { UserProfile, Suggestion, RoadmapData, ChatMessage, Project, RealWorldScenario, ProjectDetails, SetupStep, TimelineEvent, CareerDetails, MockInterview, QuizQuestion, Flashcard, ConceptConnection, Debate, CareerRecommendation, Toughness, OfflineCenter, Career, AcademicSuggestion, ResumeAnalysis, AssessmentResult } from './types';
 import * as GeminiService from './services/geminiService';
@@ -33,7 +33,15 @@ import ProfileEditModal from './components/ProfileEditModal';
 import ImportModal from './components/ImportModal';
 import ShareModal from './components/ShareModal';
 import WeekAssessmentModal from './components/WeekAssessmentModal';
-import LandingPage from './components/landing/LandingPage';
+import {
+    createRoadmapJob,
+    runJob,
+    getJob,
+    getActiveRoadmapJob,
+    getPersistedWorkflowState,
+    clearWorkflowState,
+    toRoadmapResult,
+} from './services/jobService';
 
 const translations = {
     'English': {
@@ -119,6 +127,50 @@ const App: React.FC = () => {
     const [determinedSkillLevel, setDeterminedSkillLevel] = useState<'Beginner' | 'Intermediate' | 'Expert'>();
     const [modalContent, setModalContent] = useState<{ type: string; data: any } | null>(null);
     const [isProfileEditModalVisible, setProfileEditModalVisible] = useState(false);
+    const [activeRoadmapJobId, setActiveRoadmapJobId] = useState<string | null>(null);
+    const [isAuthenticated, setIsAuthenticated] = useState(false);
+    const [authResolved, setAuthResolved] = useState(false);
+    const roadmapPollRef = useRef<number | null>(null);
+
+    const stopRoadmapPolling = () => {
+        if (roadmapPollRef.current) {
+            window.clearInterval(roadmapPollRef.current);
+            roadmapPollRef.current = null;
+        }
+    };
+
+    const resolveRoadmapJob = async (jobId: string) => {
+        const job = await getJob(jobId);
+        if (job.status === 'completed') {
+            const result = toRoadmapResult(job);
+            if (result) {
+                setRoadmapData(result);
+                setSelectedSkill(result.skill || selectedSkill);
+                clearWorkflowState();
+                stopRoadmapPolling();
+                setActiveRoadmapJobId(null);
+                navigate('/roadmap');
+                return;
+            }
+        }
+
+        if (job.status === 'failed') {
+            setErrorMessage(job.error || 'Roadmap generation failed.');
+            clearWorkflowState();
+            stopRoadmapPolling();
+            setActiveRoadmapJobId(null);
+            navigate('/error');
+        }
+    };
+
+    const startRoadmapPolling = (jobId: string) => {
+        stopRoadmapPolling();
+        roadmapPollRef.current = window.setInterval(() => {
+            resolveRoadmapJob(jobId).catch(() => {
+                // Keep polling through transient network failures.
+            });
+        }, 3000);
+    };
 
     useEffect(() => {
         const timer = setTimeout(() => {
@@ -134,6 +186,66 @@ const App: React.FC = () => {
 
         return () => clearTimeout(timer);
     }, []);
+
+    useEffect(() => {
+        const { data: subscription } = supabase.auth.onAuthStateChange(async (event) => {
+            if (event === 'SIGNED_OUT') {
+                setIsAuthenticated(false);
+                setAuthResolved(true);
+                clearWorkflowState();
+                stopRoadmapPolling();
+                navigate('/login');
+            }
+
+            if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+                await checkSession();
+            }
+        });
+
+        return () => {
+            subscription.subscription.unsubscribe();
+        };
+    }, []);
+
+    useEffect(() => {
+        return () => {
+            stopRoadmapPolling();
+        };
+    }, []);
+
+    useEffect(() => {
+        const tryResume = async () => {
+            if (!userProfile?.id) return;
+
+            const persisted = getPersistedWorkflowState();
+            const localJobId = persisted.jobId;
+
+            if (localJobId) {
+                setActiveRoadmapJobId(localJobId);
+                navigate('/loading');
+                startRoadmapPolling(localJobId);
+                try {
+                    await runJob(localJobId);
+                } catch {
+                    // Ignore if already running/completed, polling resolves final state.
+                }
+                return;
+            }
+
+            try {
+                const active = await getActiveRoadmapJob();
+                if (active) {
+                    setActiveRoadmapJobId(active.id);
+                    navigate('/loading');
+                    startRoadmapPolling(active.id);
+                }
+            } catch {
+                // Soft-fail for resume checks.
+            }
+        };
+
+        tryResume();
+    }, [userProfile?.id]);
 
     const toggleTheme = () => {
         const newTheme = theme === 'light' ? 'dark' : 'light';
@@ -152,65 +264,54 @@ const App: React.FC = () => {
 
     const checkSession = async () => {
         try {
-            // Check for Shared Roadmap URL Query Param manually if needed, or handle via route params
-            // Here we prioritize session check logic
             const { data: { session }, error: sessionError } = await supabase.auth.getSession();
             if (sessionError) throw sessionError;
     
             if (session) {
+                setIsAuthenticated(true);
                 let profile = await getCurrentProfile();
                 
                 if (!profile) {
-                     // Check if metadata has role for trainers/policymakers who might not have completed full onboarding
-                     const metadataRole = session.user.user_metadata?.role;
-                     if (metadataRole === 'trainer' || metadataRole === 'policymaker') {
-                         const stubProfile: UserProfile = {
-                             id: session.user.id,
-                             role: metadataRole,
-                             fullName: session.user.email?.split('@')[0] || 'User',
-                             skills: '', interests: '', 
-                             learningStyle: 'Balanced', academicLevel: 'Graduation', stream: 'General', focusArea: 'General'
-                         };
-                         await saveProfileFromOnboarding(stubProfile);
-                         profile = stubProfile;
-                     }
+                    const stubProfile: UserProfile = {
+                        id: session.user.id,
+                        role: 'user',
+                        fullName: session.user.email?.split('@')[0] || 'User',
+                        skills: '', interests: '',
+                        learningStyle: 'Balanced', academicLevel: 'Graduation', stream: 'General', focusArea: 'General'
+                    };
+                    await saveProfileFromOnboarding(stubProfile);
+                    profile = stubProfile;
                 }
 
                 if (profile) {
                     setUserProfile(profile);
-                    
-                    if (location.pathname === '/auth') {
-                        if (profile.role === 'trainer' || profile.role === 'policymaker') {
-                            navigate('/dashboard');
-                        } else {
-                            if (profile.academicLevel) {
-                                navigate('/dashboard');
-                            } else {
-                                navigate('/onboarding');
-                            }
-                        }
+
+                    if (location.pathname === '/login' || location.pathname === '/auth' || location.pathname === '/') {
+                        navigate('/create');
                     }
                 } else {
-                    navigate('/onboarding');
+                    setIsAuthenticated(false);
+                    navigate('/login');
                 }
             } else {
-                 // If not logged in and not on a public path, redirect to auth
-                      if (location.pathname !== '/auth' && location.pathname !== '/' && !location.search.includes('roadmapId')) {
-                    navigate('/auth');
-                 }
+                setIsAuthenticated(false);
+                if (location.pathname !== '/login' && location.pathname !== '/auth') {
+                    navigate('/login');
+                }
             }
         } catch (error: any) {
             console.error("Error during session check:", error);
             setErrorMessage("Could not connect to your session. Please check your internet connection and try again.");
+            setIsAuthenticated(false);
+            navigate('/login');
+        } finally {
+            setAuthResolved(true);
         }
     };
 
     const handleAuthSuccess = async () => {
         await checkSession();
-    };
-
-    const handleGuestAccess = () => {
-        navigate('/onboarding');
+        navigate('/create');
     };
 
     const handleOnboardingComplete = (profileData: Partial<UserProfile>) => {
@@ -253,9 +354,13 @@ const App: React.FC = () => {
         navigate('/loading');
         setErrorMessage('');
         try {
-            const data = await GeminiService.getRoadmap(selectedSkill, weeks, level, userProfile);
-            setRoadmapData(data);
-            navigate('/roadmap');
+            const job = await createRoadmapJob(selectedSkill, weeks, level, userProfile);
+            setActiveRoadmapJobId(job.id);
+            startRoadmapPolling(job.id);
+            await runJob(job.id).catch(() => {
+                // Job can already be running/completed; polling finalizes UI.
+            });
+            await resolveRoadmapJob(job.id);
         } catch (error: any) {
             setErrorMessage(error.message);
             navigate('/error');
@@ -263,6 +368,9 @@ const App: React.FC = () => {
     };
     
     const handleStartOver = () => {
+        clearWorkflowState();
+        stopRoadmapPolling();
+        setActiveRoadmapJobId(null);
         setRoadmapData(null);
         setSelectedSkill('');
         setSuggestions([]);
@@ -515,6 +623,17 @@ const App: React.FC = () => {
     const isDashboardRoute = location.pathname === '/dashboard';
     const showDashboardButton = !!userProfile.id && !isDashboardRoute;
 
+    if (!authResolved) {
+        return <Loader message="Restoring your secure session..." />;
+    }
+
+    const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+        if (!isAuthenticated) {
+            return <Navigate to="/login" replace />;
+        }
+        return <>{children}</>;
+    };
+
     return (
         <div className="min-h-screen bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-sans flex flex-col transition-colors duration-300 relative">
             <BackgroundAnimation animationType={animationType} />
@@ -523,7 +642,7 @@ const App: React.FC = () => {
             <IntroOverlay isVisible={isIntroVisible} />
             
             <div className={`flex-grow flex flex-col transition-opacity duration-500 ${isIntroVisible ? 'opacity-0' : 'opacity-100'} relative z-10`}>
-                {location.pathname !== '/auth' && location.pathname !== '/onboarding' && location.pathname !== '/' && (
+                {location.pathname !== '/login' && (
                     <Header 
                         language={language} 
                         onLanguageChange={(lang) => setLanguage(lang as keyof typeof translations)} 
@@ -543,26 +662,34 @@ const App: React.FC = () => {
                 )}
                 <main className="flex-grow container mx-auto px-3 sm:px-4 pb-8">
                     <Routes>
-                        <Route path="/auth" element={<Auth onAuthSuccess={handleAuthSuccess} onGuestAccess={handleGuestAccess} />} />
-                        <Route path="/onboarding" element={<Onboarding onComplete={handleOnboardingComplete} />} />
+                        <Route path="/login" element={isAuthenticated ? <Navigate to="/create" replace /> : <Auth onAuthSuccess={handleAuthSuccess} />} />
+                        <Route path="/auth" element={<Navigate to="/login" replace />} />
+                        <Route path="/onboarding" element={<Navigate to="/create" replace />} />
                         <Route path="/dashboard" element={
-                            userProfile.role === 'trainer' ? <TrainerDashboard /> :
-                            userProfile.role === 'policymaker' ? <PolicymakerDashboard /> :
-                            <Dashboard 
-                                onSelectRoadmap={handleSelectSavedRoadmap} 
-                                onNewRoadmap={() => navigate('/create')} 
+                            <ProtectedRoute>
+                            {userProfile.role === 'trainer' ? <TrainerDashboard /> :
+                            userProfile.role === 'admin' ? <PolicymakerDashboard /> :
+                            <Dashboard
+                                onSelectRoadmap={handleSelectSavedRoadmap}
+                                onNewRoadmap={() => navigate('/create')}
                                 onImportRoadmap={() => handleFeatureClick('import-roadmap', null)}
-                                onAnalyzeResume={(text) => handleFeatureClick('resume-analyzer', { resumeText: text })} 
+                                onAnalyzeResume={(text) => handleFeatureClick('resume-analyzer', { resumeText: text })}
                                 onEditProfile={() => setProfileEditModalVisible(true)}
-                            />
+                            />}
+                            </ProtectedRoute>
                         } />
                         <Route path="/create" element={
+                            <ProtectedRoute>
                             <InputForm existingProfile={userProfile} onSubmit={handleProfileSubmit} title={translations[language].formTitle} />
+                            </ProtectedRoute>
                         } />
                         <Route path="/suggestions" element={
+                            <ProtectedRoute>
                             <Suggestions suggestions={suggestions} onSelect={handleSelectSkill} onRefresh={handleRefresh} />
+                            </ProtectedRoute>
                         } />
                         <Route path="/configure" element={
+                            <ProtectedRoute>
                             <ConfigureRoadmap 
                                 skillName={selectedSkill} 
                                 interestDomain={userProfile.interests} 
@@ -571,9 +698,11 @@ const App: React.FC = () => {
                                 onTakeQuiz={handleTakeSkillQuiz} 
                                 determinedSkillLevel={determinedSkillLevel}
                             />
+                            </ProtectedRoute>
                         } />
                         <Route path="/roadmap" element={
-                            roadmapData ? (
+                            <ProtectedRoute>
+                            {roadmapData ? (
                                 <Roadmap 
                                     data={roadmapData} 
                                     userProfile={userProfile} 
@@ -582,24 +711,20 @@ const App: React.FC = () => {
                                     setRoadmapData={setRoadmapData} 
                                 />
                             ) : <Navigate to="/create" />
+                            }
+                            </ProtectedRoute>
                         } />
-                        <Route path="/loading" element={<Loader message="Working our magic..." />} />
+                        <Route path="/loading" element={<ProtectedRoute><Loader message="Working our magic..." /></ProtectedRoute>} />
                         <Route path="/error" element={
+                            <ProtectedRoute>
                             <div className="text-center px-2">
                                 <p className="text-red-500 font-semibold bg-red-100 p-4 rounded-lg">{errorMessage}</p>
                                 <button onClick={handleStartOver} className="dynamic-button mt-4 w-full sm:w-auto">Try Again</button>
                             </div>
+                            </ProtectedRoute>
                         } />
-                        <Route path="/" element={
-                            <LandingPage
-                                theme={theme}
-                                onToggleTheme={toggleTheme}
-                                onGetStarted={() => navigate('/auth')}
-                                onExploreRoadmaps={() => navigate('/create')}
-                                onGoToAuth={() => navigate('/auth')}
-                            />
-                        } />
-                        <Route path="*" element={<Navigate to="/" />} />
+                        <Route path="/" element={<Navigate to={isAuthenticated ? '/create' : '/login'} replace />} />
+                        <Route path="*" element={<Navigate to={isAuthenticated ? '/create' : '/login'} replace />} />
                     </Routes>
                 </main>
             </div>

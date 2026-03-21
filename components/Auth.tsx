@@ -1,18 +1,14 @@
 import React, { useState } from 'react';
 import { supabase, isSupabaseConfigured } from '../services/supabaseService';
-import { UserRole } from '../types';
 
 interface AuthProps {
     onAuthSuccess: () => void;
-    onGuestAccess: () => void;
 }
 
-const Auth: React.FC<AuthProps> = ({ onAuthSuccess, onGuestAccess }) => {
+const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
     const [isLogin, setIsLogin] = useState(true);
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
-    // Default role is learner, dropdown removed as requested
-    const role: UserRole = 'learner';
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [infoMessage, setInfoMessage] = useState('');
@@ -36,15 +32,7 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess, onGuestAccess }) => {
                     throw error;
                 }
             } else {
-                const { data, error } = await supabase.auth.signUp({ 
-                    email, 
-                    password,
-                    options: {
-                        data: {
-                            role: role // Always 'learner'
-                        }
-                    }
-                });
+                const { data, error } = await supabase.auth.signUp({ email, password });
 
                 if (error) throw error;
                 if (data.user && !data.session) {
@@ -96,12 +84,6 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess, onGuestAccess }) => {
                             className="dynamic-button"
                         >
                             I Added The Keys, Refresh Page
-                        </button>
-                        <button 
-                            onClick={onGuestAccess} 
-                            className="text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 underline"
-                        >
-                            Continue as Guest (No Save Feature)
                         </button>
                     </div>
                 </div>
@@ -181,14 +163,6 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess, onGuestAccess }) => {
                                 {isLogin ? 'Sign Up' : 'Log In'}
                             </button>
                         </p>
-                    </div>
-                    <div className="pt-4 border-t border-slate-200 dark:border-slate-700">
-                        <button 
-                            onClick={onGuestAccess} 
-                            className="text-sm text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 transition-colors underline"
-                        >
-                            Continue as Guest (No Cloud Save)
-                        </button>
                     </div>
                 </div>
             </div>

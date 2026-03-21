@@ -8,6 +8,7 @@ import dotenv from 'dotenv';
 import express from 'express';
 import cors from 'cors';
 import OpenAI from 'openai';
+import { createClient } from '@supabase/supabase-js';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -15,7 +16,27 @@ dotenv.config();
 const app = express();
 const PORT = Number(process.env.BACKEND_PORT || 3004);
 
-app.use(cors());
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
+
+app.use(
+    cors({
+        origin: (origin, callback) => {
+            if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+                callback(null, true);
+                return;
+            }
+            callback(new Error('Origin not allowed by CORS'));
+        },
+        methods: ['POST', 'GET', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization'],
+        credentials: false,
+    }),
+);
 app.use(express.json());
 
 type KeyState = {
@@ -150,19 +171,41 @@ const summarizeKeyHealth = () => keyPool.map(k => ({
     failures: k.failures,
 }));
 
+const supabaseAuthClient = SUPABASE_URL && SUPABASE_ANON_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false },
+    })
+    : null;
+
+const readAuthToken = (authHeader: string | undefined): string | null => {
+    const header = String(authHeader || '');
+    if (!header.startsWith('Bearer ')) return null;
+    const token = header.substring('Bearer '.length).trim();
+    return token || null;
+};
+
 // Health check
 app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
-        message: 'API proxy server running',
+        service: 'horizon-api-proxy',
         keysConfigured: keyPool.length,
-        keyHealth: summarizeKeyHealth(),
     });
 });
 
 // Chat completions proxy
 app.post('/api/chat', async (req, res) => {
     try {
+        const token = readAuthToken(req.header('Authorization'));
+        if (!token || !supabaseAuthClient) {
+            return res.status(401).json({ error: 'Authentication required' });
+        }
+
+        const { data: authData, error: authError } = await supabaseAuthClient.auth.getUser(token);
+        if (authError || !authData.user) {
+            return res.status(401).json({ error: 'Invalid session' });
+        }
+
         const { model, messages, temperature, top_p, max_tokens } = req.body;
         const requestedModel = normalizeModelName(model);
 
@@ -249,7 +292,6 @@ app.post('/api/chat', async (req, res) => {
         return res.status(503).json({
             error: errorMessage,
             details: `Mapped key for model '${requestedModel}' is exhausted or cooling down. Retry shortly.`,
-            keyHealth: summarizeKeyHealth(),
         });
     } catch (error: any) {
         console.error('API Error:', error.message);
