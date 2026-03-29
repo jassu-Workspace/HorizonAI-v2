@@ -12,9 +12,17 @@
       "memory": 1024,
       "maxDuration": 60
     },
-    "api/**/*.ts": {
+    "api/health.ts": {
+      "memory": 256,
+      "maxDuration": 10
+    },
+    "api/news.ts": {
       "memory": 512,
       "maxDuration": 30
+    },
+    "api/internal/ratelimit.ts": {
+      "memory": 512,
+      "maxDuration": 10
     }
   },
   "headers": [
