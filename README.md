@@ -175,6 +175,29 @@ Expected local endpoints:
 - Frontend: `http://localhost:3000`
 - API Proxy: `http://localhost:3004`
 
+### 5) Production Vercel Pipeline (Industry Ready)
+
+This repository now includes a production pipeline at:
+
+- `.github/workflows/vercel-production-pipeline.yml`
+
+Pipeline behavior:
+
+1. Pull Requests to `main`
+  - Runs strict quality gates: `npm ci`, `npm run typecheck`, `npm run build`, `npm audit --omit=dev --audit-level=critical`
+  - Builds and deploys a Vercel Preview deployment when Vercel secrets are configured
+2. Push to `main`
+  - Re-runs quality gates
+  - Performs a prebuilt Vercel production deployment (`vercel build --prod` + `vercel deploy --prebuilt --prod`)
+
+Required GitHub repository secrets:
+
+- `VERCEL_TOKEN`
+- `VERCEL_ORG_ID`
+- `VERCEL_PROJECT_ID`
+
+Use `.env.example` as the source of truth for all required Vercel environment variables.
+
 ---
 
 ## Supabase Setup

@@ -174,17 +174,24 @@ Resilience behavior:
 - npm run dev: Runs Vite + local backend proxy concurrently.
 - npm run dev:frontend: Runs frontend only.
 - npm run dev:backend: Runs backend proxy only.
+- npm run typecheck: Runs strict TypeScript checks for CI.
 - npm run build: Creates production bundle.
+- npm run build:ci: Runs typecheck + production build.
 - npm run preview: Previews production build.
 
 ## 12. Deployment Details (Vercel)
-vercel.json rewrite behavior:
+vercel.json production behavior:
 - /api/(.*) -> /api/$1
 - /(.*) -> /index.html
 
 This allows:
 - API calls through Vercel serverless routes
 - SPA routing fallback to frontend app
+
+CI/CD pipeline:
+- GitHub Actions workflow: `.github/workflows/vercel-production-pipeline.yml`
+- Pull requests to main: quality gates + preview deployment
+- Pushes to main: quality gates + production deployment
 
 ## 13. Mobile Reliability and Responsiveness Status
 Recent improvements in the codebase include:

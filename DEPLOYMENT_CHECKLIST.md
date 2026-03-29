@@ -232,6 +232,9 @@ NODE_ENV=production               # Should be set in Vercel
 
 For your DevOps team:
 
+- [ ] Add GitHub Actions secrets: `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`
+- [ ] Enable and monitor `.github/workflows/vercel-production-pipeline.yml`
+- [ ] Enforce branch protection on `main` (require successful "Quality Gates" check)
 - [ ] Create Upstash Redis instance (free tier: 10GB storage)
 - [ ] Add `REDIS_URL` or `UPSTASH_REDIS_REST_URL` to Vercel env secrets
 - [ ] Run database migrations (ai_usage_daily, malware_scans, anti-escalation trigger)
