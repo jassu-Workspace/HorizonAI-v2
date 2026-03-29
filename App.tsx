@@ -174,10 +174,11 @@ const App: React.FC = () => {
     };
 
     useEffect(() => {
-        const timer = setTimeout(() => {
-            setIsIntroVisible(false);
-            checkSession();
-        }, 3000);
+        // Run auth check immediately — don't block behind the intro animation timer
+        checkSession();
+
+        // Dismiss intro overlay after 2.5s
+        const timer = setTimeout(() => setIsIntroVisible(false), 2500);
         
         const savedTheme = localStorage.getItem('horizon-theme') as Theme;
         if (savedTheme) {
@@ -186,6 +187,22 @@ const App: React.FC = () => {
         } 
 
         return () => clearTimeout(timer);
+    }, []);
+
+    // Safety net: if auth check hangs (network issue / Supabase timeout),
+    // force-resolve after 10s so the user never stays stuck on the loader.
+    useEffect(() => {
+        const safetyTimer = setTimeout(() => {
+            setAuthResolved(prev => {
+                if (!prev) {
+                    console.warn('[Horizon] Auth safety timeout — forcing session resolution');
+                    setIsAuthenticated(false);
+                    return true;
+                }
+                return prev;
+            });
+        }, 10000);
+        return () => clearTimeout(safetyTimer);
     }, []);
 
     useEffect(() => {
@@ -635,7 +652,11 @@ const App: React.FC = () => {
     const showDashboardButton = !!userProfile.id && !isDashboardRoute;
 
     if (!authResolved) {
-        return <Loader message="Restoring your secure session..." />;
+        return (
+            <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 dark:bg-slate-900">
+                <Loader message="Restoring your secure session..." subMessages={['Checking your credentials...', 'Loading your profile...', 'Almost ready...']} />
+            </div>
+        );
     }
 
     const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {

@@ -54,7 +54,7 @@ export const Loader: React.FC<LoaderProps> = ({ message, subMessages }) => {
 
     return (
         <div
-            className="text-center p-8 flex flex-col justify-center items-center min-h-[200px]"
+            className="text-center p-8 flex flex-col justify-center items-center min-h-[70vh]"
             role="status"
             aria-live="polite"
             aria-label={message}
