@@ -1,10 +1,9 @@
 /**
- * ELITE SECURE AI CHAT ENDPOINT - Phase 2 Hardening
- * Zero-trust, abuse-resistant, cost-protected
- * 
- * 10-Layer Security Stack:
+ * ELITE SECURE AI CHAT ENDPOINT - Production Hardened
+ *
+ * Security Stack:
  * 1. JWT Authentication (strict Supabase validation)
- * 2. Distributed Rate Limiting (Redis sliding window)
+ * 2. Distributed Rate Limiting (Redis with in-memory fallback)
  * 3. Device Fingerprinting + Anomaly Detection
  * 4. Behavioral Abuse Scoring (progressive penalties)
  * 5. Schema Validation (Zod, bounded payloads)
@@ -31,7 +30,6 @@ const RATE_LIMIT_COOLDOWN_MS = Number(process.env.NVIDIA_KEY_RATE_LIMIT_COOLDOWN
 const ERROR_COOLDOWN_MS = Number(process.env.NVIDIA_KEY_ERROR_COOLDOWN_MS || 8000);
 const MAX_RETRIES_PER_REQUEST = Number(process.env.NVIDIA_KEY_MAX_RETRIES || 6);
 
-// Elite phase 2 config
 const MAX_MESSAGES = Number(process.env.AI_MAX_MESSAGES || 20);
 const MAX_MESSAGE_LENGTH = Number(process.env.AI_MAX_MESSAGE_LENGTH || 4000);
 const MAX_INPUT_TOKENS = Number(process.env.AI_MAX_INPUT_TOKENS || 6000);
@@ -39,12 +37,10 @@ const MAX_OUTPUT_TOKENS = Number(process.env.AI_MAX_OUTPUT_TOKENS || 1200);
 const DAILY_TOKEN_QUOTA = Number(process.env.AI_DAILY_TOKEN_QUOTA || 50000);
 const HOURLY_TOKEN_QUOTA = Number(process.env.AI_HOURLY_TOKEN_QUOTA || 10000);
 
-// Distributed rate limits (via Redis)
 const MAX_REQUESTS_PER_5_MIN_IP = Number(process.env.AI_RL_IP_5M || 40);
 const MAX_REQUESTS_PER_5_MIN_USER = Number(process.env.AI_RL_USER_5M || 30);
 const MAX_REQUESTS_PER_5_MIN_DEVICE = Number(process.env.AI_RL_DEVICE_5M || 25);
 
-// Abuse scoring thresholds
 const ABUSE_SCORE_THROTTLE_THRESHOLD = Number(process.env.AI_ABUSE_SCORE_THROTTLE || 50);
 const ABUSE_SCORE_BLOCK_THRESHOLD = Number(process.env.AI_ABUSE_SCORE_BLOCK || 70);
 const ABUSE_SCORE_BAN_THRESHOLD = Number(process.env.AI_ABUSE_SCORE_BAN || 90);
@@ -52,9 +48,10 @@ const ABUSE_SCORE_BAN_THRESHOLD = Number(process.env.AI_ABUSE_SCORE_BAN || 90);
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 
+// Parse ALLOWED_ORIGINS from env — empty means allow all (for dev convenience)
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
     .split(',')
-    .map(origin => origin.trim())
+    .map(o => o.trim())
     .filter(Boolean);
 
 const ALLOWED_MODELS = ['z-ai/glm4.7', 'meta/llama-3.1-405b-instruct', 'mistralai/mistral-7b-instruct-v0.2'] as const;
@@ -88,7 +85,6 @@ const keyPool: KeyState[] = [
         lastUsedAt: 0,
     }));
 
-// In-memory fallback for recent requests (cost pattern analysis)
 const recentRequests = new Map<string, Array<{ timestamp: number; estimatedTokens: number }>>();
 
 const chatSchema = z.object({
@@ -139,7 +135,7 @@ const getAvailableKeys = (): KeyState[] => {
 
 const pickNextKey = (forModel: (typeof ALLOWED_MODELS)[number]): KeyState | null => {
     const mappedSlot = MODEL_TO_KEY_SLOT[forModel];
-    const available = getAvailableKeys().filter(k => k.slot === mappedSlot);
+    const available = getAvailableKeys().filter(k => k.slot === mappedSlot || k.slot === 0);
     if (available.length === 0) return null;
 
     for (let i = 0; i < available.length; i++) {
@@ -178,6 +174,7 @@ const createClientForKey = (apiKey: string) =>
     new OpenAI({
         apiKey,
         baseURL: NVIDIA_BASE_URL,
+        timeout: 55000, // 55s timeout (under Vercel's 60s limit)
     });
 
 const getClientIp = (req: any): string => {
@@ -188,9 +185,7 @@ const getClientIp = (req: any): string => {
     return String(req.socket?.remoteAddress || 'unknown');
 };
 
-const getUserAgent = (req: any): string => {
-    return String(req.headers['user-agent'] || 'unknown');
-};
+const getUserAgent = (req: any): string => String(req.headers['user-agent'] || 'unknown');
 
 const nowIso = () => new Date().toISOString();
 
@@ -220,12 +215,29 @@ const setSecurityHeaders = (res: any) => {
     res.setHeader('Cache-Control', 'no-store');
 };
 
-const setCorsHeaders = (req: any, res: any) => {
+/**
+ * CORS: allow production Vercel domain + localhost dev, block unknown origins.
+ * If ALLOWED_ORIGINS env is empty, allow all (useful for quick dev/preview deploys).
+ */
+const setCorsHeaders = (req: any, res: any): boolean => {
     const requestOrigin = String(req.headers.origin || '');
-    const allowAll = ALLOWED_ORIGINS.length === 0;
-    const isAllowed = allowAll || ALLOWED_ORIGINS.includes(requestOrigin);
 
-    if (isAllowed && requestOrigin) {
+    // No origin header = same-origin request (server-to-server, curl, etc.) — allow
+    if (!requestOrigin) {
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+        return true;
+    }
+
+    // If ALLOWED_ORIGINS is not configured, allow all origins (graceful dev mode)
+    const allowAll = ALLOWED_ORIGINS.length === 0;
+    // Also dynamically allow *.vercel.app preview URLs
+    const isVercelPreview = /^https:\/\/[a-z0-9-]+-[a-z0-9]+-[a-z0-9]+\.vercel\.app$/.test(requestOrigin);
+    const isExplicitlyAllowed = ALLOWED_ORIGINS.includes(requestOrigin);
+
+    const isAllowed = allowAll || isVercelPreview || isExplicitlyAllowed;
+
+    if (isAllowed) {
         res.setHeader('Access-Control-Allow-Origin', requestOrigin);
     }
 
@@ -256,10 +268,24 @@ const getInternalApiBase = (req: any): string => {
     return `${proto}://${host}`;
 };
 
+/**
+ * INTERNAL SIGNING KEY VALIDATION
+ * If the key is the placeholder, skip internal rate-limit auth and use degraded mode.
+ */
+const isSigningKeyConfigured = (): boolean => {
+    const key = String(process.env.INTERNAL_SIGNING_KEY || process.env.INTERNAL_SIGNING_KEYS || '').trim();
+    return key.length > 0 && key !== 'replace_with_long_random_secret';
+};
+
 const callInternalRateLimit = async (
     req: any,
     payload: { ip: string; userId: string; deviceFingerprint: string },
-) => {
+): Promise<any> => {
+    if (!isSigningKeyConfigured()) {
+        // Signing key not configured — skip internal call, use direct in-memory RL
+        return null;
+    }
+
     const baseUrl = getInternalApiBase(req);
     if (!baseUrl) {
         return null;
@@ -273,6 +299,9 @@ const callInternalRateLimit = async (
     }
 
     try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+
         const response = await fetch(`${baseUrl}${path}`, {
             method: 'POST',
             headers: {
@@ -280,7 +309,10 @@ const callInternalRateLimit = async (
                 ...headers,
             },
             body,
+            signal: controller.signal,
         });
+
+        clearTimeout(timeoutId);
 
         if (!response.ok) {
             return null;
@@ -332,7 +364,6 @@ const getSupabaseUserClient = (accessToken: string) => {
 };
 
 const getTodayDate = () => new Date().toISOString().slice(0, 10);
-const getCurrentHour = () => new Date().toISOString().slice(0, 13);
 
 type DailyUsageRow = {
     user_id: string;
@@ -342,12 +373,11 @@ type DailyUsageRow = {
     blocked_until: string | null;
 };
 
-const getUsageRow = async (supabase: ReturnType<typeof getSupabaseUserClient>, userId: string): Promise<DailyUsageRow | null> => {
-    const client = supabase;
-    if (!client) return null;
+const getUsageRow = async (supabaseClient: ReturnType<typeof getSupabaseUserClient>, userId: string): Promise<DailyUsageRow | null> => {
+    if (!supabaseClient) return null;
 
     const usageDate = getTodayDate();
-    const { data, error } = await client
+    const { data, error } = await supabaseClient
         .from('ai_usage_daily')
         .select('user_id, usage_date, tokens_used, request_count, blocked_until')
         .eq('user_id', userId)
@@ -363,21 +393,20 @@ const getUsageRow = async (supabase: ReturnType<typeof getSupabaseUserClient>, u
 };
 
 const saveUsage = async (
-    supabase: ReturnType<typeof getSupabaseUserClient>,
+    supabaseClient: ReturnType<typeof getSupabaseUserClient>,
     userId: string,
     estimatedTokens: number,
     blockedUntil: string | null,
 ) => {
-    const client = supabase;
-    if (!client) return;
+    if (!supabaseClient) return;
 
     const usageDate = getTodayDate();
-    const existing = await getUsageRow(client, userId);
+    const existing = await getUsageRow(supabaseClient, userId);
 
     const nextTokens = (existing?.tokens_used || 0) + estimatedTokens;
     const nextRequests = (existing?.request_count || 0) + 1;
 
-    const { error } = await client.from('ai_usage_daily').upsert(
+    const { error } = await supabaseClient.from('ai_usage_daily').upsert(
         {
             user_id: userId,
             usage_date: usageDate,
@@ -390,19 +419,22 @@ const saveUsage = async (
     );
 
     if (error) {
-        logSecurityEvent('quota_upsert_failed', { userId, message: error.message });
+        // Non-fatal: log but don't block the response
+        // The 'ai_usage_daily' table may not exist in all deployments
+        if (!String(error.message || '').includes('does not exist')) {
+            logSecurityEvent('quota_upsert_failed', { userId, message: error.message });
+        }
     }
 };
 
-/**
- * ELITE HANDLER: 10-layer security stack
- */
+// ─── MAIN HANDLER ─────────────────────────────────────────────────────────────
 export default async function handler(req: any, res: any) {
     setSecurityHeaders(res);
 
-    // CORS validation (Layer 1)
+    // CORS validation
     const corsAllowed = setCorsHeaders(req, res);
     if (!corsAllowed && req.headers.origin) {
+        logSecurityEvent('cors_violation', { origin: req.headers.origin });
         return res.status(403).json({ error: 'CORS policy violation' });
     }
 
@@ -418,49 +450,50 @@ export default async function handler(req: any, res: any) {
     const ip = getClientIp(req);
     const userAgent = getUserAgent(req);
 
+    // Declare costPattern for use in error logging later
+    let costPattern: ReturnType<typeof analyzeCostPattern> = { isAbnormal: false } as any;
+    let deviceAnomalies: ReturnType<typeof detectDeviceAnomalies> = { anomalyScore: 0 } as any;
+
     try {
         // Infra check
         if (keyPool.length === 0) {
-            logSecurityEvent('chat_misconfigured', { requestId });
-            return res.status(503).json({ error: 'Service temporarily unavailable' });
+            logSecurityEvent('chat_misconfigured', { requestId, reason: 'no_api_keys' });
+            return res.status(503).json({ error: 'AI service is not configured. Please contact support.' });
         }
 
-        // Layer 2: JWT Authentication (strict)
+        // Layer 1: JWT Authentication
         const token = readAuthToken(req);
         if (!token) {
             logSecurityEvent('chat_unauthenticated', { requestId, ip });
-            return res.status(401).json({ error: 'Authentication required' });
+            return res.status(401).json({ error: 'Authentication required. Please sign in.' });
         }
 
         const supabaseAuth = getSupabaseAuthClient();
         if (!supabaseAuth) {
             logSecurityEvent('chat_supabase_missing', { requestId });
-            return res.status(503).json({ error: 'Service temporarily unavailable' });
+            return res.status(503).json({ error: 'Backend database is not configured.' });
         }
 
         const { data: authData, error: authError } = await supabaseAuth.auth.getUser(token);
         if (authError || !authData.user) {
             logSecurityEvent('chat_invalid_token', { requestId, ip, reason: authError?.message || 'no_user' });
-            return res.status(401).json({ error: 'Invalid session' });
+            return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
         }
 
         const userId = authData.user.id;
         const supabaseUser = getSupabaseUserClient(token);
-        if (!supabaseUser) {
-            return res.status(503).json({ error: 'Service temporarily unavailable' });
-        }
 
-        // Layer 3: Device Fingerprinting + Anomaly Detection
+        // Layer 2: Device Fingerprinting
         const deviceFingerprint = generateDeviceFingerprint({
             userAgent,
             ip,
             acceptLanguage: String(req.headers['accept-language'] || ''),
             acceptEncoding: String(req.headers['accept-encoding'] || ''),
-            tlsVersion: undefined, // Would be extracted from TLS context in real server
+            tlsVersion: undefined,
             tlsCipherSuite: undefined,
         });
 
-        const deviceAnomalies = detectDeviceAnomalies({
+        deviceAnomalies = detectDeviceAnomalies({
             userAgent,
             ip,
             acceptLanguage: String(req.headers['accept-language'] || ''),
@@ -468,81 +501,60 @@ export default async function handler(req: any, res: any) {
         });
 
         if (deviceAnomalies.anomalyScore >= 60) {
-            logSecurityEvent('device_anomaly_detected', {
-                requestId,
-                userId,
-                ip,
-                anomaly_score: deviceAnomalies.anomalyScore,
-                flags: deviceAnomalies,
-            });
-
-            // Add abuse score
+            logSecurityEvent('device_anomaly_detected', { requestId, userId, ip, anomaly_score: deviceAnomalies.anomalyScore });
             const abuseUpdate = await updateAbuseScore(userId, 15);
             if (abuseUpdate.action === 'ban') {
-                return res.status(403).json({ error: 'Access denied' });
+                return res.status(403).json({ error: 'Access denied.' });
             }
         }
 
-        // Layer 4: Distributed Multi-Level Rate Limiting (Redis)
+        // Layer 3: Rate Limiting (Redis or in-memory fallback)
         await initRedis();
-        let rlCheck = await callInternalRateLimit(req, {
-            ip,
-            userId,
-            deviceFingerprint,
-        });
+        let rlCheck = await callInternalRateLimit(req, { ip, userId, deviceFingerprint });
 
         if (!rlCheck) {
-            logSecurityEvent('chat_ratelimit_degraded_mode', {
-                requestId,
-                userId,
+            // Internal RL unavailable — perform direct check via the imported module
+            const { checkMultiLevelRateLimit } = await import('../lib/redis-ratelimit');
+            rlCheck = await checkMultiLevelRateLimit(
                 ip,
-                reason: 'internal_ratelimit_unavailable',
-            });
-
-            rlCheck = {
-                combined: true,
-                ip: { allowed: true, remaining: MAX_REQUESTS_PER_5_MIN_IP, resetAt: Date.now() + 300000 },
-                user: { allowed: true, remaining: MAX_REQUESTS_PER_5_MIN_USER, resetAt: Date.now() + 300000 },
-                device: { allowed: true, remaining: MAX_REQUESTS_PER_5_MIN_DEVICE, resetAt: Date.now() + 300000 },
-            };
+                userId,
+                deviceFingerprint,
+                MAX_REQUESTS_PER_5_MIN_IP,
+                MAX_REQUESTS_PER_5_MIN_USER,
+                MAX_REQUESTS_PER_5_MIN_DEVICE,
+            );
         }
 
-                if (!rlCheck || !rlCheck.combined) {
-                        const failingLevel = !rlCheck
-                                ? 'service'
-                                : !rlCheck.ip.allowed
-                                    ? 'ip'
-                                    : !rlCheck.user.allowed
-                                        ? 'user'
-                                        : 'device';
-                        const retryAfterMs = !rlCheck
-                                ? 60_000
-                                : failingLevel === 'ip'
-                                    ? rlCheck.ip.retryAfter
-                                    : failingLevel === 'user'
-                                        ? rlCheck.user.retryAfter
-                                        : rlCheck.device.retryAfter;
-            logSecurityEvent('chat_rate_limited', {
-                requestId,
-                userId,
-                ip,
-                level: failingLevel,
-                                retryAfterMs,
-            });
+        if (!rlCheck || !rlCheck.combined) {
+            const failingLevel = !rlCheck
+                ? 'service'
+                : !rlCheck.ip?.allowed
+                ? 'ip'
+                : !rlCheck.user?.allowed
+                ? 'user'
+                : 'device';
+            const retryAfterMs = !rlCheck
+                ? 60_000
+                : failingLevel === 'ip'
+                ? rlCheck.ip?.retryAfter
+                : failingLevel === 'user'
+                ? rlCheck.user?.retryAfter
+                : rlCheck.device?.retryAfter;
 
-            // Progressive penalty
+            logSecurityEvent('chat_rate_limited', { requestId, userId, ip, level: failingLevel, retryAfterMs });
+
             const abuseUpdate = await updateAbuseScore(userId, 10);
             if (abuseUpdate.action !== 'allow') {
-                return res.status(429).json({ error: abuseUpdate.message || 'Rate limited' });
+                return res.status(429).json({ error: abuseUpdate.message || 'Too many requests. Please wait a moment.' });
             }
 
             return res.status(429).json({
-                error: 'Too many requests',
+                error: 'Too many requests. Please wait a moment before trying again.',
                 retryAfterMs,
             });
         }
 
-        // Layer 5: Schema Validation (Zod, bounded payloads)
+        // Layer 4: Schema Validation
         const parsed = chatSchema.safeParse({
             ...req.body,
             model: normalizeModelName(req.body?.model || ''),
@@ -555,7 +567,7 @@ export default async function handler(req: any, res: any) {
                 ip,
                 issues: parsed.error.issues.map(i => ({ path: i.path.join('.'), message: i.message })),
             });
-            return res.status(400).json({ error: 'Invalid request payload' });
+            return res.status(400).json({ error: 'Invalid request format. Please try again.' });
         }
 
         const payload = parsed.data;
@@ -563,86 +575,63 @@ export default async function handler(req: any, res: any) {
         const estimatedInputTokens = estimateTokens(sanitizedMessages);
 
         if (estimatedInputTokens > MAX_INPUT_TOKENS) {
-            return res.status(413).json({ error: 'Input too large' });
+            return res.status(413).json({ error: 'Your message is too long. Please shorten it and try again.' });
         }
 
-        // Layer 6: Behavioral Anti-Abuse Detection
+        // Layer 5: Behavioral Abuse Detection
         const userRecentPrompts = promptHistory.getRecentPrompts(userId, 10);
-        const abuseSignals = detectAbuseSignals(
-            sanitizedMessages,
-            userRecentPrompts,
-        );
+        const abuseSignals = detectAbuseSignals(sanitizedMessages, userRecentPrompts);
 
         if (abuseSignals.abuseScore >= 40) {
-            logSecurityEvent('chat_abuse_signals_detected', {
-                requestId,
-                userId,
-                ip,
-                abuse_score: abuseSignals.abuseScore,
-                signals: abuseSignals,
-            });
-
+            logSecurityEvent('chat_abuse_signals_detected', { requestId, userId, ip, abuse_score: abuseSignals.abuseScore });
             const abuseUpdate = await updateAbuseScore(userId, Math.ceil(abuseSignals.abuseScore / 10));
             if (abuseUpdate.action === 'block') {
-                return res.status(429).json({ error: 'Request pattern blocked' });
-            }
-            if (abuseUpdate.action === 'throttle') {
-                // Allow but log throttle
-                logSecurityEvent('chat_throttled', { requestId, userId });
+                return res.status(429).json({ error: 'Request blocked due to suspicious pattern.' });
             }
         }
 
-        // Track this prompt for similarity detection
         promptHistory.addPrompt(userId, sanitizedMessages.map(m => m.content).join('\n'));
 
-        // Layer 7: Cost Pattern Detection (hourly + daily quotas)
-        const usage = await getUsageRow(supabaseUser, userId);
+        // Layer 6: Quota check (non-blocking if table doesn't exist)
+        let usage: DailyUsageRow | null = null;
+        try {
+            if (supabaseUser) {
+                usage = await getUsageRow(supabaseUser, userId);
+            }
+        } catch {
+            // ai_usage_daily table may not exist — non-fatal
+        }
+
         if (usage?.blocked_until && Date.parse(usage.blocked_until) > Date.now()) {
             logSecurityEvent('chat_access_temporarily_restricted', { requestId, userId });
-            return res.status(429).json({ error: 'Access temporarily restricted' });
+            return res.status(429).json({ error: 'Your AI access has been temporarily restricted. Try again later.' });
         }
 
         const requestedOutputTokens = Math.min(payload.max_tokens || 1024, MAX_OUTPUT_TOKENS);
         const estimatedTotalTokens = estimatedInputTokens + requestedOutputTokens;
 
-        // Check daily quota
         if ((usage?.tokens_used || 0) + estimatedTotalTokens > DAILY_TOKEN_QUOTA) {
-            logSecurityEvent('chat_daily_quota_exceeded', {
-                requestId,
-                userId,
-                used: usage?.tokens_used || 0,
-                estimated_total: estimatedTotalTokens,
-            });
-            return res.status(429).json({ error: 'Daily AI quota exceeded' });
+            logSecurityEvent('chat_daily_quota_exceeded', { requestId, userId, used: usage?.tokens_used || 0 });
+            return res.status(429).json({ error: 'You have reached your daily AI usage limit. It resets at midnight.' });
         }
 
-        // Analyze cost pattern
+        // Layer 7: Cost Pattern Detection
         const userRequests = recentRequests.get(userId) || [];
         userRequests.push({ timestamp: Date.now(), estimatedTokens: estimatedTotalTokens });
         if (userRequests.length > 100) userRequests.shift();
         recentRequests.set(userId, userRequests);
 
-        const costPattern = analyzeCostPattern(
-            userRequests,
-            5, // 5 minute window
-            Math.min(100_000, DAILY_TOKEN_QUOTA / 5), // Max per 5-min
-        );
+        costPattern = analyzeCostPattern(userRequests, 5, Math.min(100_000, DAILY_TOKEN_QUOTA / 5));
 
         if (costPattern.isAbnormal) {
-            logSecurityEvent('chat_cost_exhaustion_pattern_detected', {
-                requestId,
-                userId,
-                ip,
-                pattern: costPattern,
-            });
-
+            logSecurityEvent('chat_cost_exhaustion_pattern', { requestId, userId, ip });
             const abuseUpdate = await updateAbuseScore(userId, 20);
             if (abuseUpdate.action === 'block' || abuseUpdate.action === 'ban') {
-                return res.status(429).json({ error: abuseUpdate.message || 'Request blocked' });
+                return res.status(429).json({ error: abuseUpdate.message || 'Request blocked.' });
             }
         }
 
-        // Layer 8: Upstream Provider Resilience (multi-key fallback)
+        // Layer 8: Upstream Provider Resilience (multi-key with fallback)
         let lastError: any = null;
         const maxAttempts = Math.max(1, MAX_RETRIES_PER_REQUEST);
 
@@ -651,7 +640,9 @@ export default async function handler(req: any, res: any) {
 
             if (!keyState) {
                 const soonest = Math.min(...keyPool.map(k => k.cooldownUntil));
-                await wait(Math.max(300, soonest - Date.now()));
+                const waitMs = Math.max(300, soonest - Date.now());
+                if (waitMs > 30000) break; // Don't wait more than 30s
+                await wait(waitMs);
                 continue;
             }
 
@@ -670,26 +661,24 @@ export default async function handler(req: any, res: any) {
                 keyState.cooldownUntil = 0;
 
                 const providerUsageTokens = Number((completion as any)?.usage?.total_tokens || 0) || estimatedTotalTokens;
-                await saveUsage(supabaseUser, userId, providerUsageTokens, null);
 
-                // Store device access for geographic anomaly detection
-                deviceTracker.addAccess(userId, {
-                    ip,
-                    fingerprint: deviceFingerprint,
-                    timestamp: Date.now(),
-                });
+                // Save usage (non-blocking)
+                if (supabaseUser) {
+                    saveUsage(supabaseUser, userId, providerUsageTokens, null).catch(() => {});
+                }
+
+                deviceTracker.addAccess(userId, { ip, fingerprint: deviceFingerprint, timestamp: Date.now() });
 
                 logSecurityEvent('chat_success', {
                     requestId,
                     userId,
-                    ip,
                     model: payload.model,
                     tokens_used: providerUsageTokens,
-                    device_fingerprint_hash: deviceFingerprint.substring(0, 16),
                 });
 
                 return res.status(200).json(completion);
             } catch (error: any) {
+                // GLM 4.7 not found on this account — fallback to Llama
                 if (payload.model === 'z-ai/glm4.7' && isNotFoundError(error)) {
                     try {
                         const fallbackModel = 'meta/llama-3.1-405b-instruct';
@@ -710,15 +699,11 @@ export default async function handler(req: any, res: any) {
                             fallbackKeyState.cooldownUntil = 0;
 
                             const providerUsageTokens = Number((completion as any)?.usage?.total_tokens || 0) || estimatedTotalTokens;
-                            await saveUsage(supabaseUser, userId, providerUsageTokens, null);
+                            if (supabaseUser) {
+                                saveUsage(supabaseUser, userId, providerUsageTokens, null).catch(() => {});
+                            }
 
-                            logSecurityEvent('chat_success_via_fallback', {
-                                requestId,
-                                userId,
-                                fallback_model: fallbackModel,
-                                tokens_used: providerUsageTokens,
-                            });
-
+                            logSecurityEvent('chat_success_via_fallback', { requestId, userId, fallback_model: fallbackModel });
                             return res.status(200).json(completion);
                         }
                     } catch (fallbackError: any) {
@@ -733,18 +718,22 @@ export default async function handler(req: any, res: any) {
             }
         }
 
-        // Layer 9: Comprehensive Security Logging (forensic audit trail)
+        // All keys exhausted
         logSecurityEvent('chat_upstream_failed', {
             requestId,
             userId,
             ip,
-            device_fingerprint_hash: deviceFingerprint.substring(0, 16),
             message: String(lastError?.message || 'unknown'),
-            cost_pattern: costPattern,
-            device_anomalies: deviceAnomalies,
         });
 
-        return res.status(503).json({ error: 'Upstream model temporarily unavailable' });
+        const errorStatus = Number(lastError?.status || 0);
+        if (errorStatus === 429) {
+            return res.status(429).json({ error: 'AI service is rate-limited. Please try again in a minute.' });
+        }
+
+        return res.status(503).json({
+            error: 'The AI service is temporarily unavailable. Please try again in a moment.',
+        });
     } catch (error: any) {
         logSecurityEvent('chat_unhandled_error', {
             requestId,
@@ -752,6 +741,6 @@ export default async function handler(req: any, res: any) {
             message: String(error?.message || 'unknown'),
             stack: process.env.NODE_ENV === 'development' ? String(error?.stack) : undefined,
         });
-        return res.status(500).json({ error: 'Internal server error' });
+        return res.status(500).json({ error: 'An unexpected error occurred. Please try again.' });
     }
 }

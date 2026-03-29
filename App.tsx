@@ -130,6 +130,7 @@ const App: React.FC = () => {
     const [activeRoadmapJobId, setActiveRoadmapJobId] = useState<string | null>(null);
     const [isAuthenticated, setIsAuthenticated] = useState(false);
     const [authResolved, setAuthResolved] = useState(false);
+    const [isSubmittingForm, setIsSubmittingForm] = useState(false);
     const roadmapPollRef = useRef<number | null>(null);
 
     const stopRoadmapPolling = () => {
@@ -324,9 +325,10 @@ const App: React.FC = () => {
     };
 
     const handleProfileSubmit = async (profile: UserProfile) => {
-        navigate('/loading'); // Use a loading route or overlay
+        setIsSubmittingForm(true);
         setUserProfile(profile);
         setErrorMessage('');
+        navigate('/loading');
         try {
             const effectiveSkill = profile.skills || profile.interests;
             if (!effectiveSkill) {
@@ -335,13 +337,22 @@ const App: React.FC = () => {
                 return;
             }
             const suggestions = await GeminiService.getSkillSuggestions(profile);
+            if (!suggestions || suggestions.length === 0) {
+                setErrorMessage("No skill suggestions could be generated. Please try a different skill or interest.");
+                navigate('/create');
+                return;
+            }
             setSuggestions(suggestions);
             navigate('/suggestions');
         } catch (error: any) {
-            setErrorMessage(error.message);
-            navigate('/error');
+            const msg = error?.message || 'Something went wrong. Please try again.';
+            setErrorMessage(msg);
+            navigate('/create');
+        } finally {
+            setIsSubmittingForm(false);
         }
     };
+
 
     const handleRefresh = () => handleProfileSubmit(userProfile);
 
@@ -680,7 +691,7 @@ const App: React.FC = () => {
                         } />
                         <Route path="/create" element={
                             <ProtectedRoute>
-                            <InputForm existingProfile={userProfile} onSubmit={handleProfileSubmit} title={translations[language].formTitle} />
+                            <InputForm existingProfile={userProfile} onSubmit={handleProfileSubmit} title={translations[language].formTitle} isLoading={isSubmittingForm} errorMessage={errorMessage} />
                             </ProtectedRoute>
                         } />
                         <Route path="/suggestions" element={
@@ -716,13 +727,29 @@ const App: React.FC = () => {
                         } />
                         <Route path="/loading" element={<ProtectedRoute><Loader message="Working our magic..." /></ProtectedRoute>} />
                         <Route path="/error" element={
-                            <ProtectedRoute>
-                            <div className="text-center px-2">
-                                <p className="text-red-500 font-semibold bg-red-100 p-4 rounded-lg">{errorMessage}</p>
-                                <button onClick={handleStartOver} className="dynamic-button mt-4 w-full sm:w-auto">Try Again</button>
+                            <div className="flex items-center justify-center py-12 px-4">
+                                <div className="glass-card max-w-lg w-full p-8 text-center">
+                                    <div className="w-16 h-16 bg-red-100 dark:bg-red-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                        </svg>
+                                    </div>
+                                    <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">Something went wrong</h2>
+                                    <p className="text-red-600 dark:text-red-400 font-medium bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-3 rounded-lg mb-6 text-sm">
+                                        {errorMessage || 'An unexpected error occurred. Please try again.'}
+                                    </p>
+                                    <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                                        <button onClick={() => navigate(-1)} className="px-6 py-2.5 rounded-full border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 font-medium hover:bg-slate-100 dark:hover:bg-slate-800 transition-all">
+                                            ← Go Back
+                                        </button>
+                                        <button onClick={handleStartOver} className="dynamic-button">
+                                            Start Over
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
-                            </ProtectedRoute>
                         } />
+
                         <Route path="/" element={<Navigate to={isAuthenticated ? '/create' : '/login'} replace />} />
                         <Route path="*" element={<Navigate to={isAuthenticated ? '/create' : '/login'} replace />} />
                     </Routes>

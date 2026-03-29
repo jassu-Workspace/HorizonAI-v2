@@ -1,7 +1,10 @@
 /**
- * Distributed Rate Limiting via Redis/Upstash
- * Supports global consistency across multiple Vercel instances
- * Phase 2 Elite Hardening: Replaces in-memory rate limiter
+ * Distributed Rate Limiting via Redis/Upstash (with in-memory fallback)
+ * 
+ * Strategy:
+ *  - If Redis is configured → distributed sliding window (safe across Vercel instances)
+ *  - If Redis is NOT configured → in-memory sliding window (works for single instances)
+ *    This prevents the old "fail-secure = deny all" behaviour that caused HTTP 500 errors.
  */
 
 import { createClient } from 'redis';
@@ -10,11 +13,56 @@ type RedisClient = ReturnType<typeof createClient>;
 
 let redisClient: RedisClient | null = null;
 let isInitialized = false;
+let redisAvailable = false;
 
-/**
- * Initialize Redis connection (lazily, on first use)
- * Compatible with Upstash Redis (serverless)
- */
+// ─── In-Memory Fallback ──────────────────────────────────────────────────────
+// Stores timestamps of recent requests per key (sliding window)
+const inMemoryWindows = new Map<string, number[]>();
+
+const inMemoryRateLimit = (
+    key: string,
+    limit: number,
+    windowMs: number,
+): RateLimitResult => {
+    const now = Date.now();
+    const windowStart = now - windowMs;
+    const timestamps = (inMemoryWindows.get(key) || []).filter(t => t > windowStart);
+
+    if (timestamps.length < limit) {
+        timestamps.push(now);
+        inMemoryWindows.set(key, timestamps);
+        return {
+            allowed: true,
+            remaining: limit - timestamps.length,
+            resetAt: now + windowMs,
+        };
+    }
+
+    return {
+        allowed: false,
+        remaining: 0,
+        resetAt: now + windowMs,
+        retryAfter: windowMs,
+    };
+};
+
+// Prune old in-memory entries every 5 minutes to prevent memory leaks
+setInterval(() => {
+    const cutoff = Date.now() - 10 * 60 * 1000; // 10 min ago
+    for (const [key, timestamps] of inMemoryWindows.entries()) {
+        const fresh = timestamps.filter(t => t > cutoff);
+        if (fresh.length === 0) {
+            inMemoryWindows.delete(key);
+        } else {
+            inMemoryWindows.set(key, fresh);
+        }
+    }
+}, 5 * 60 * 1000);
+
+// ─── In-Memory Abuse Scores ──────────────────────────────────────────────────
+const inMemoryAbuseScores = new Map<string, { score: number; date: string }>();
+
+// ─── Redis Initialization ─────────────────────────────────────────────────────
 export const initRedis = async (): Promise<RedisClient | null> => {
     if (isInitialized) {
         return redisClient;
@@ -27,40 +75,44 @@ export const initRedis = async (): Promise<RedisClient | null> => {
         const redisToken =
             String(process.env.REDIS_RATE_LIMIT_TOKEN || '').trim() ||
             String(process.env.UPSTASH_REDIS_TOKEN || '').trim();
+        const redisUrl = String(process.env.REDIS_URL || '').trim();
 
-        if (!redisHost || !redisToken) {
-            console.warn('[redis] REDIS_HOST or REDIS_RATE_LIMIT_TOKEN is missing; rate limiting will fail-secure');
+        if (!redisHost && !redisToken && !redisUrl) {
+            // Redis not configured — use in-memory fallback (single instance safe)
+            console.info('[redis] Not configured; using in-memory rate limit fallback.');
             isInitialized = true;
+            redisAvailable = false;
             return null;
         }
 
-        const redisUrl = `rediss://default:${encodeURIComponent(redisToken)}@${redisHost}:6379`;
+        const connectionUrl = redisUrl || `rediss://default:${encodeURIComponent(redisToken)}@${redisHost}:6379`;
 
         redisClient = createClient({
-            url: redisUrl,
+            url: connectionUrl,
             socket: {
                 reconnectStrategy: (retries) => Math.min(retries * 50, 500),
+                connectTimeout: 3000,
             },
         });
 
         redisClient.on('error', (err) => {
             console.error('[redis] Connection error:', err.message);
+            redisAvailable = false;
         });
 
         await redisClient.connect();
         console.log('[redis] Connected to Upstash/Redis');
+        redisAvailable = true;
         isInitialized = true;
         return redisClient;
     } catch (error) {
-        console.error('[redis] Initialization failed:', error);
+        console.error('[redis] Initialization failed; falling back to in-memory:', error);
         isInitialized = true;
+        redisAvailable = false;
         return null;
     }
 };
 
-/**
- * Get Redis client (initializes if needed)
- */
 export const getRedisClient = async (): Promise<RedisClient | null> => {
     if (!isInitialized) {
         return initRedis();
@@ -68,10 +120,7 @@ export const getRedisClient = async (): Promise<RedisClient | null> => {
     return redisClient;
 };
 
-/**
- * Distributed sliding window rate limiter
- * CRITICAL: Prevents distributed IP rotation, burst attacks, cost-exhaustion
- */
+// ─── Rate Limit Result ───────────────────────────────────────────────────────
 export interface RateLimitResult {
     allowed: boolean;
     remaining: number;
@@ -79,23 +128,18 @@ export interface RateLimitResult {
     retryAfter?: number;
 }
 
+// ─── Distributed / Fallback Sliding Window ────────────────────────────────────
 export const checkDistributedRateLimit = async (
     key: string,
     limit: number,
-    windowMs: number = 5 * 60 * 1000, // 5 minutes default
-    labels: Record<string, unknown> = {},
+    windowMs: number = 5 * 60 * 1000,
+    _labels: Record<string, unknown> = {},
 ): Promise<RateLimitResult> => {
     const client = await getRedisClient();
 
-    if (!client) {
-        // Fallback: if Redis unavailable, log and deny (fail-secure)
-        console.warn('[ratelimit] Redis unavailable; denying request for', key, labels);
-        return {
-            allowed: false,
-            remaining: 0,
-            resetAt: Date.now() + windowMs,
-            retryAfter: windowMs,
-        };
+    if (!client || !redisAvailable) {
+        // In-memory fallback — safe for single-instance Vercel functions
+        return inMemoryRateLimit(`rl:${key}`, limit, windowMs);
     }
 
     try {
@@ -103,7 +147,6 @@ export const checkDistributedRateLimit = async (
         const windowStart = now - windowMs;
         const bucket = `rl:${key}`;
 
-        // Lua script: atomic sliding window + expiration
         const luaScript = `
             local bucket = KEYS[1]
             local now = tonumber(ARGV[1])
@@ -111,19 +154,14 @@ export const checkDistributedRateLimit = async (
             local limit = tonumber(ARGV[3])
             local window_ms = tonumber(ARGV[4])
             
-            -- Remove old entries outside the window
             redis.call('ZREMRANGEBYSCORE', bucket, 0, window_start)
-            
-            -- Get current count
             local current = redis.call('ZCARD', bucket)
             
             if current < limit then
-                -- Add new request
                 redis.call('ZADD', bucket, now, now .. '-' .. math.random(1000000))
                 redis.call('EXPIRE', bucket, math.ceil(window_ms / 1000))
                 return { 1, limit - current - 1, now + window_ms }
             else
-                -- Limit exceeded
                 return { 0, 0, now + window_ms }
             end
         `;
@@ -143,33 +181,21 @@ export const checkDistributedRateLimit = async (
             };
         }
 
-        return {
-            allowed: false,
-            remaining: 0,
-            resetAt: now + windowMs,
-            retryAfter: windowMs,
-        };
+        // Unexpected Redis response — fail open
+        return { allowed: true, remaining: 5, resetAt: Date.now() + windowMs };
     } catch (error) {
-        console.error('[ratelimit] Redis error:', error);
-        // Fail-secure: deny on error
-        return {
-            allowed: false,
-            remaining: 0,
-            resetAt: Date.now() + windowMs,
-            retryAfter: windowMs,
-        };
+        console.error('[ratelimit] Redis error, falling back to in-memory:', error);
+        redisAvailable = false;
+        return inMemoryRateLimit(`rl:${key}`, limit, windowMs);
     }
 };
 
-/**
- * Multi-level distributed rate limiting
- * Checks: IP, user, device fingerprint
- */
+// ─── Multi-Level Rate Limit ───────────────────────────────────────────────────
 export interface RateLimitCheckMulti {
     ip: RateLimitResult;
     user: RateLimitResult;
     device: RateLimitResult;
-    combined: boolean; // all three must pass
+    combined: boolean;
 }
 
 export const checkMultiLevelRateLimit = async (
@@ -195,31 +221,24 @@ export const checkMultiLevelRateLimit = async (
     };
 };
 
-/**
- * Quota-style rate limiting (e.g., daily AI token budget)
- * Uses Redis sorted set to track daily usage windows
- */
+// ─── Daily Quota (Redis + In-Memory Fallback) ─────────────────────────────────
 export const checkDailyQuota = async (
     userId: string,
     currentUsage: number,
-    dailyQota: number,
+    dailyQuota: number,
 ): Promise<{ allowed: boolean; remaining: number; resetsAt: string }> => {
     const client = await getRedisClient();
+    const resetTime = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
-    if (!client) {
-        console.warn('[quota] Redis unavailable; allowing request for', userId);
-        return {
-            allowed: true,
-            remaining: dailyQota - currentUsage,
-            resetsAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        };
+    if (!client || !redisAvailable) {
+        // Fail-open when Redis not configured — track via Supabase daily table
+        return { allowed: currentUsage < dailyQuota, remaining: Math.max(0, dailyQuota - currentUsage), resetsAt: resetTime };
     }
 
     try {
         const today = new Date().toISOString().slice(0, 10);
         const quotaKey = `quota:${userId}:${today}`;
 
-        // Atomic increment and check
         const luaScript = `
             local quota_key = KEYS[1]
             local usage = tonumber(ARGV[1])
@@ -239,59 +258,47 @@ export const checkDailyQuota = async (
 
         const result = await client.eval(luaScript, {
             keys: [quotaKey],
-            arguments: [String(currentUsage), String(dailyQota)],
+            arguments: [String(currentUsage), String(dailyQuota)],
         });
 
         if (Array.isArray(result) && result.length === 2) {
             const [allowed, remaining] = result as [0 | 1, number];
-            return {
-                allowed: allowed === 1,
-                remaining: Math.max(0, remaining),
-                resetsAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-            };
+            return { allowed: allowed === 1, remaining: Math.max(0, remaining), resetsAt: resetTime };
         }
 
-        return {
-            allowed: false,
-            remaining: 0,
-            resetsAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        };
+        return { allowed: false, remaining: 0, resetsAt: resetTime };
     } catch (error) {
         console.error('[quota] Redis error:', error);
-        return {
-            allowed: false,
-            remaining: 0,
-            resetsAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        };
+        return { allowed: currentUsage < dailyQuota, remaining: Math.max(0, dailyQuota - currentUsage), resetsAt: resetTime };
     }
 };
 
-/**
- * Abuse scoring: track user behaviors, progressive penalties
- * Phases: normal → throttle → temporary-block → permanent-ban (via DB update)
- */
+// ─── Abuse Score Tracking ─────────────────────────────────────────────────────
 export interface AbuseScoreCheckResult {
-    score: number; // 0-100
+    score: number;
     action: 'allow' | 'throttle' | 'block' | 'ban';
     message?: string;
 }
 
 export const updateAbuseScore = async (
     userId: string,
-    increment: number, // e.g., +5 for suspicious, +15 for rate-limit breach
+    increment: number,
     maxScorePerDay: number = 100,
 ): Promise<AbuseScoreCheckResult> => {
     const client = await getRedisClient();
 
-    if (!client) {
-        return {
-            score: increment,
-            action: 'allow',
-        };
+    const today = new Date().toISOString().slice(0, 10);
+
+    if (!client || !redisAvailable) {
+        // In-memory abuse tracking fallback
+        const existing = inMemoryAbuseScores.get(userId);
+        const prevScore = existing?.date === today ? (existing?.score || 0) : 0;
+        const newScore = Math.min(prevScore + increment, maxScorePerDay);
+        inMemoryAbuseScores.set(userId, { score: newScore, date: today });
+        return buildAbuseResult(newScore);
     }
 
     try {
-        const today = new Date().toISOString().slice(0, 10);
         const abuseKey = `abuse:${userId}:${today}`;
 
         const luaScript = `
@@ -314,41 +321,38 @@ export const updateAbuseScore = async (
             arguments: [String(increment), String(maxScorePerDay)],
         });
 
-        const numScore = Number(score) || 0;
-
-        // Determine action based on abuse score
-        let action: 'allow' | 'throttle' | 'block' | 'ban' = 'allow';
-        let message: string | undefined;
-
-        if (numScore >= 90) {
-            action = 'ban';
-            message = 'Your account has been flagged for abuse. Contact support.';
-        } else if (numScore >= 70) {
-            action = 'block';
-            message = 'Rate-limited due to suspicious activity.';
-        } else if (numScore >= 50) {
-            action = 'throttle';
-            message = 'Request throttled due to abuse detection.';
-        }
-
-        return { score: numScore, action, message };
+        return buildAbuseResult(Number(score) || 0);
     } catch (error) {
         console.error('[abuse] Redis error:', error);
-        return {
-            score: 0,
-            action: 'allow',
-        };
+        return { score: 0, action: 'allow' };
     }
 };
 
-/**
- * Cleanup: gracefully close Redis on process exit
- */
+const buildAbuseResult = (numScore: number): AbuseScoreCheckResult => {
+    let action: 'allow' | 'throttle' | 'block' | 'ban' = 'allow';
+    let message: string | undefined;
+
+    if (numScore >= 90) {
+        action = 'ban';
+        message = 'Your account has been flagged for abuse. Contact support.';
+    } else if (numScore >= 70) {
+        action = 'block';
+        message = 'Rate-limited due to suspicious activity.';
+    } else if (numScore >= 50) {
+        action = 'throttle';
+        message = 'Request throttled due to abuse detection.';
+    }
+
+    return { score: numScore, action, message };
+};
+
+// ─── Cleanup ─────────────────────────────────────────────────────────────────
 export const closeRedis = async () => {
     if (redisClient && isInitialized) {
         await redisClient.quit();
         redisClient = null;
         isInitialized = false;
+        redisAvailable = false;
         console.log('[redis] Disconnected');
     }
 };

@@ -52,6 +52,9 @@ const callNvidiaAPI = async (
 
             for (const apiBase of API_BASE_CANDIDATES) {
                 try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 55000);
+
                     response = await fetch(`${apiBase}/chat`, {
                         method: 'POST',
                         headers: {
@@ -64,26 +67,49 @@ const callNvidiaAPI = async (
                             temperature,
                           top_p: topP,
                             max_tokens: 4096,
-                        })
+                        }),
+                        signal: controller.signal,
                     });
+
+                    clearTimeout(timeoutId);
                     networkError = null;
                     break;
                 } catch (fetchErr: any) {
-                    networkError = fetchErr;
-                    lastError = fetchErr;
+                    if (fetchErr?.name === 'AbortError') {
+                        networkError = new Error('The AI request timed out. Please try again.');
+                    } else {
+                        networkError = fetchErr;
+                    }
+                    lastError = networkError;
                 }
             }
 
             if (!response) {
-                throw networkError || new Error('Network request failed');
+                throw networkError || new Error('Network request failed. Check your internet connection.');
             }
 
             if (!response.ok) {
                 const error = await response.json().catch(() => ({}));
-              const message = error.error || `HTTP ${response.status}: ${response.statusText}`;
+              const rawMessage = String(error.error || '');
+              
+              // Map HTTP error codes to user-friendly messages
+              let message: string;
+              if (response.status === 401) {
+                message = 'Your session has expired. Please sign in again.';
+              } else if (response.status === 403) {
+                message = 'Access denied. Please check your account permissions.';
+              } else if (response.status === 429) {
+                message = 'Too many requests. Please wait a moment and try again.';
+              } else if (response.status === 503) {
+                message = 'The AI service is temporarily unavailable. Please try again in a moment.';
+              } else if (response.status >= 500) {
+                message = rawMessage || 'An AI server error occurred. Please try again.';
+              } else {
+                message = rawMessage || `Request failed (${response.status}). Please try again.`;
+              }
 
               // GLM fallback: if key-1 model is unavailable on provider side, degrade to key-2 Llama route.
-              if (model === 'z-ai/glm4.7' && (String(message).includes('404') || String(message).toLowerCase().includes('not found'))) {
+              if (model === 'z-ai/glm4.7' && (String(rawMessage).includes('404') || String(rawMessage).toLowerCase().includes('not found'))) {
                 return callNvidiaAPI(prompt, 'meta/llama-3.1-405b-instruct', temperature, topP);
               }
 
@@ -96,7 +122,7 @@ const callNvidiaAPI = async (
             lastError = error;
             const errorMsg = error.message || '';
 
-            if (errorMsg.includes('429') || errorMsg.includes('overloaded')) {
+            if (errorMsg.includes('429') || errorMsg.includes('overloaded') || errorMsg.toLowerCase().includes('too many requests')) {
                 retries--;
                 if (retries > 0) {
                     await new Promise(res => setTimeout(res, 2000));
@@ -104,15 +130,26 @@ const callNvidiaAPI = async (
                 }
             }
 
-            if (retries === -1 || !errorMsg.includes('429')) {
-                throw new Error(errorMsg || 'API request failed');
+            // Don't retry on auth errors, abort errors, or non-retriable errors
+            if (
+                errorMsg.includes('sign in') ||
+                errorMsg.includes('expired') ||
+                errorMsg.includes('timed out') ||
+                error?.name === 'AbortError'
+            ) {
+                throw error;
             }
+
             retries--;
+            if (retries <= 0) {
+                throw lastError || new Error('AI request failed after multiple attempts. Please try again.');
+            }
         }
     }
 
-    throw lastError || new Error('API request failed after retries');
+    throw lastError || new Error('AI request failed after retries');
 };
+
 
 /**
  * Parse JSON from text response, handling markdown code blocks
