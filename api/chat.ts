@@ -18,12 +18,12 @@
 import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
-import { buildInternalAuthHeaders } from './internal-auth';
+import { buildInternalAuthHeaders } from '../lib/internal-auth';
 
 // Phase 2 Elite modules
-import { updateAbuseScore, initRedis } from './redis-ratelimit';
-import { generateDeviceFingerprint, detectDeviceAnomalies, deviceTracker } from './device-fingerprinting';
-import { detectAbuseSignals, analyzeCostPattern, promptHistory } from './behavioral-analysis';
+import { updateAbuseScore, initRedis } from '../lib/redis-ratelimit';
+import { generateDeviceFingerprint, detectDeviceAnomalies, deviceTracker } from '../lib/device-fingerprinting';
+import { detectAbuseSignals, analyzeCostPattern, promptHistory } from '../lib/behavioral-analysis';
 
 // Constants
 const NVIDIA_BASE_URL = process.env.NVIDIA_API_BASE || 'https://integrate.api.nvidia.com/v1';

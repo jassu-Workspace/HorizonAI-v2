@@ -1,5 +1,5 @@
-import { checkMultiLevelRateLimit, updateAbuseScore, initRedis } from '../redis-ratelimit';
-import { verifyInternalRequest } from '../internal-auth';
+import { checkMultiLevelRateLimit, updateAbuseScore, initRedis } from '../../lib/redis-ratelimit';
+import { verifyInternalRequest } from '../../lib/internal-auth';
 
 const MAX_REQUESTS_PER_5_MIN_IP = Number(process.env.AI_RL_IP_5M || 40);
 const MAX_REQUESTS_PER_5_MIN_USER = Number(process.env.AI_RL_USER_5M || 30);
