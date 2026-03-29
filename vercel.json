@@ -59,10 +59,6 @@
   ],
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api/$1"
-    },
-    {
       "source": "/api/chat-v2",
       "destination": "/api/chat"
     },
@@ -73,6 +69,10 @@
     {
       "source": "/api/job-run",
       "destination": "/api/jobs?action=run"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/$1"
     },
     {
       "source": "/(.*)",

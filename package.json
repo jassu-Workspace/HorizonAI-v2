@@ -11,9 +11,10 @@
     "dev": "concurrently \"vite\" \"tsx api-server.ts\"",
     "dev:frontend": "vite",
     "dev:backend": "tsx api-server.ts",
+    "check:vercel-functions": "node scripts/check-vercel-functions.mjs",
     "typecheck": "tsc --noEmit",
     "build": "vite build",
-    "build:ci": "npm run typecheck && npm run build",
+    "build:ci": "npm run check:vercel-functions && npm run typecheck && npm run build",
     "preview": "vite preview"
   },
   "dependencies": {

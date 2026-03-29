@@ -1,0 +1,6 @@
+# Keep local dev-only server out of Vercel upload context
+api-server.ts
+
+# Typical local/dev artifacts
+.vscode/
+*.log
