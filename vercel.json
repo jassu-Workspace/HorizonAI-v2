@@ -8,11 +8,7 @@
       "memory": 1024,
       "maxDuration": 60
     },
-    "api/chat-v2.ts": {
-      "memory": 1024,
-      "maxDuration": 60
-    },
-    "api/job-run.ts": {
+    "api/jobs.ts": {
       "memory": 1024,
       "maxDuration": 60
     },
@@ -57,6 +53,18 @@
     {
       "source": "/api/(.*)",
       "destination": "/api/$1"
+    },
+    {
+      "source": "/api/chat-v2",
+      "destination": "/api/chat"
+    },
+    {
+      "source": "/api/job",
+      "destination": "/api/jobs"
+    },
+    {
+      "source": "/api/job-run",
+      "destination": "/api/jobs?action=run"
     },
     {
       "source": "/(.*)",
