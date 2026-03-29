@@ -268,20 +268,28 @@ const callInternalRateLimit = async (
     const path = '/api/internal/ratelimit';
     const body = JSON.stringify(payload);
     const headers = buildInternalAuthHeaders('POST', path, body);
-    const response = await fetch(`${baseUrl}${path}`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            ...headers,
-        },
-        body,
-    });
-
-    if (!response.ok) {
+    if (!headers) {
         return null;
     }
 
-    return response.json();
+    try {
+        const response = await fetch(`${baseUrl}${path}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...headers,
+            },
+            body,
+        });
+
+        if (!response.ok) {
+            return null;
+        }
+
+        return response.json();
+    } catch {
+        return null;
+    }
 };
 
 const scrubText = (text: string): string => {
@@ -477,11 +485,27 @@ export default async function handler(req: any, res: any) {
 
         // Layer 4: Distributed Multi-Level Rate Limiting (Redis)
         await initRedis();
-        const rlCheck = await callInternalRateLimit(req, {
+        let rlCheck = await callInternalRateLimit(req, {
             ip,
             userId,
             deviceFingerprint,
         });
+
+        if (!rlCheck) {
+            logSecurityEvent('chat_ratelimit_degraded_mode', {
+                requestId,
+                userId,
+                ip,
+                reason: 'internal_ratelimit_unavailable',
+            });
+
+            rlCheck = {
+                combined: true,
+                ip: { allowed: true, remaining: MAX_REQUESTS_PER_5_MIN_IP, resetAt: Date.now() + 300000 },
+                user: { allowed: true, remaining: MAX_REQUESTS_PER_5_MIN_USER, resetAt: Date.now() + 300000 },
+                device: { allowed: true, remaining: MAX_REQUESTS_PER_5_MIN_DEVICE, resetAt: Date.now() + 300000 },
+            };
+        }
 
                 if (!rlCheck || !rlCheck.combined) {
                         const failingLevel = !rlCheck

@@ -31,7 +31,7 @@ const toPayload = (method: string, path: string, timestamp: string, nonce: strin
 export const buildInternalAuthHeaders = (method: string, path: string, body: string) => {
     const [currentKey] = getSigningKeys();
     if (!currentKey) {
-        throw new Error('Internal signing key missing');
+        return null;
     }
 
     const timestamp = String(Date.now());
