@@ -3,6 +3,8 @@
   "framework": "vite",
   "cleanUrls": true,
   "trailingSlash": false,
+  "installCommand": "npm install --include=dev",
+  "buildCommand": "npm run build",
   "functions": {
     "api/chat.ts": {
       "memory": 1024,
