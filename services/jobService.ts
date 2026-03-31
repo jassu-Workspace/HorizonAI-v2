@@ -121,7 +121,7 @@ export const createRoadmapJob = async (
 
 export const runJob = async (jobId: string): Promise<WorkflowJob> => {
     const token = await readToken();
-    const response = await fetch(`${getApiBase()}/job-run`, {
+    const response = await fetch(`${getApiBase()}/jobs?action=run`, {
         method: 'POST',
         headers: authHeaders(token),
         body: JSON.stringify({ id: jobId }),
@@ -133,7 +133,7 @@ export const runJob = async (jobId: string): Promise<WorkflowJob> => {
 
 export const getJob = async (jobId: string): Promise<WorkflowJob> => {
     const token = await readToken();
-    const response = await fetch(`${getApiBase()}/job?id=${encodeURIComponent(jobId)}`, {
+    const response = await fetch(`${getApiBase()}/jobs?id=${encodeURIComponent(jobId)}`, {
         method: 'GET',
         headers: {
             Authorization: `Bearer ${token}`,

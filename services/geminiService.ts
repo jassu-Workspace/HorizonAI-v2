@@ -10,21 +10,44 @@ import { supabase } from './supabaseService';
  */
 
 // API Proxy Server URL
-// In production, avoid using localhost values baked from build-time .env.
+// In development, force AI requests through the backend proxy on port 3004.
 const configuredApiBase = String(import.meta.env.VITE_API_PROXY_BASE || '').trim();
-const configuredPointsToLocalhost = /(^|\/\/)(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(configuredApiBase);
-const browserIsLocalhost = /^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname);
 const normalizeApiBase = (base: string) => base.replace(/\/+$/, '');
-const API_BASE_CANDIDATES = Array.from(new Set([
-  ...(configuredApiBase && (!configuredPointsToLocalhost || browserIsLocalhost)
-    ? [normalizeApiBase(configuredApiBase)]
-    : []),
-  normalizeApiBase(`${window.location.origin}/api`),
-  '/api',
-]));
+const isDev = Boolean(import.meta.env.DEV);
+const configuredPortMatch = configuredApiBase.match(/:(\d+)(?:\/|$)/);
+const configuredPort = configuredPortMatch ? Number(configuredPortMatch[1]) : null;
+
+const buildDevApiCandidates = (): string[] => {
+  const candidates = [
+    `http://${window.location.hostname}:3004/api`,
+    'http://localhost:3004/api',
+    'http://127.0.0.1:3004/api',
+  ];
+
+  // Only trust configured dev base when it points to the backend proxy port.
+  if (configuredApiBase && configuredPort === 3004) {
+    candidates.unshift(configuredApiBase);
+  }
+
+  return Array.from(new Set(candidates.map(normalizeApiBase)));
+};
+
+const buildProdApiCandidates = (): string[] => {
+  const candidates = [
+    configuredApiBase,
+    `${window.location.origin}/api`,
+    '/api',
+  ].filter(Boolean) as string[];
+
+  return Array.from(new Set(candidates.map(normalizeApiBase)));
+};
+
+const API_BASE_CANDIDATES = isDev ? buildDevApiCandidates() : buildProdApiCandidates();
+
+type ApiRequestError = Error & { status?: number; code?: string; rawMessage?: string };
 
 /**
- * Make API calls through local proxy server
+ * Make API calls through local proxy server with robust retry logic
  */
 const callNvidiaAPI = async (
     prompt: string,
@@ -42,90 +65,120 @@ const callNvidiaAPI = async (
     throw new Error('Please sign in to use AI features.');
   }
 
-    let retries = 3;
+    const requestToBase = async (apiBase: string): Promise<string> => {
+      const controller = new AbortController();
+      const requestDeadlineMs = 25000; // Increased from 12s to allow NVIDIA API time to process
+      const timeoutId = window.setTimeout(() => controller.abort(), requestDeadlineMs);
+      let response: Response;
+      try {
+        response = await fetch(`${apiBase}/chat`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${accessToken}`,
+          },
+          signal: controller.signal,
+          body: JSON.stringify({
+            model,
+            messages: [{ role: 'user', content: prompt }],
+            temperature,
+            top_p: topP,
+            max_tokens: 4096,
+          }),
+        });
+      } catch (fetchErr: any) {
+        window.clearTimeout(timeoutId);
+        if (fetchErr?.name === 'AbortError') {
+          const err: ApiRequestError = new Error('AI request timed out. Please try again.');
+          err.code = 'REQUEST_TIMEOUT';
+          throw err;
+        }
+        const err: ApiRequestError = new Error(fetchErr?.message || 'Network request failed. Check your internet connection.');
+        err.code = 'NETWORK_ERROR';
+        throw err;
+      }
+
+      window.clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        const rawMessage = String(error.error || '');
+
+        if (response.status === 404) {
+          const err: ApiRequestError = new Error('AI endpoint not found');
+          err.status = 404;
+          err.code = 'ENDPOINT_NOT_FOUND';
+          err.rawMessage = rawMessage;
+          throw err;
+        }
+
+        if (model === 'z-ai/glm4.7' && (rawMessage.includes('404') || rawMessage.toLowerCase().includes('not found'))) {
+          const err: ApiRequestError = new Error('Primary model unavailable');
+          err.status = response.status;
+          err.code = 'MODEL_NOT_FOUND';
+          err.rawMessage = rawMessage;
+          throw err;
+        }
+
+        let message: string;
+        if (response.status === 401) {
+          message = 'Your session has expired. Please sign in again.';
+        } else if (response.status === 403) {
+          message = 'Access denied. Please check your account permissions.';
+        } else if (response.status === 429) {
+          message = 'Too many requests. Please wait a moment and try again.';
+        } else if (response.status === 503) {
+          message = 'The AI service is temporarily unavailable. Please try again in a moment.';
+        } else if (response.status >= 500) {
+          message = rawMessage || 'An AI server error occurred. Please try again.';
+        } else {
+          message = rawMessage || `Request failed (${response.status}). Please try again.`;
+        }
+
+        const err: ApiRequestError = new Error(message);
+        err.status = response.status;
+        err.rawMessage = rawMessage;
+        throw err;
+      }
+
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content || '';
+
+      if (!content) {
+        throw new Error('Empty response from AI model. Please try again.');
+      }
+
+      return content;
+    };
+
+    let retries = 2;
     let lastError: any = null;
 
     while (retries > 0) {
         try {
-            let response: Response | null = null;
-            let networkError: any = null;
-
-            for (const apiBase of API_BASE_CANDIDATES) {
-                try {
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 55000);
-
-                    response = await fetch(`${apiBase}/chat`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${accessToken}`,
-                        },
-                        body: JSON.stringify({
-                          model,
-                            messages: [{ role: 'user', content: prompt }],
-                            temperature,
-                          top_p: topP,
-                            max_tokens: 4096,
-                        }),
-                        signal: controller.signal,
-                    });
-
-                    clearTimeout(timeoutId);
-                    networkError = null;
-                    break;
-                } catch (fetchErr: any) {
-                    if (fetchErr?.name === 'AbortError') {
-                        networkError = new Error('The AI request timed out. Please try again.');
-                    } else {
-                        networkError = fetchErr;
-                    }
-                    lastError = networkError;
-                }
-            }
-
-            if (!response) {
-                throw networkError || new Error('Network request failed. Check your internet connection.');
-            }
-
-            if (!response.ok) {
-                const error = await response.json().catch(() => ({}));
-              const rawMessage = String(error.error || '');
-              
-              // Map HTTP error codes to user-friendly messages
-              let message: string;
-              if (response.status === 401) {
-                message = 'Your session has expired. Please sign in again.';
-              } else if (response.status === 403) {
-                message = 'Access denied. Please check your account permissions.';
-              } else if (response.status === 429) {
-                message = 'Too many requests. Please wait a moment and try again.';
-              } else if (response.status === 503) {
-                message = 'The AI service is temporarily unavailable. Please try again in a moment.';
-              } else if (response.status >= 500) {
-                message = rawMessage || 'An AI server error occurred. Please try again.';
-              } else {
-                message = rawMessage || `Request failed (${response.status}). Please try again.`;
-              }
-
-              // GLM fallback: if key-1 model is unavailable on provider side, degrade to key-2 Llama route.
-              if (model === 'z-ai/glm4.7' && (String(rawMessage).includes('404') || String(rawMessage).toLowerCase().includes('not found'))) {
-                return callNvidiaAPI(prompt, 'meta/llama-3.1-405b-instruct', temperature, topP);
-              }
-
-              throw new Error(message);
-            }
-
-            const data = await response.json();
-            return data.choices[0]?.message?.content || '';
+        return await Promise.any(API_BASE_CANDIDATES.map(apiBase => requestToBase(apiBase)));
         } catch (error: any) {
-            lastError = error;
-            const errorMsg = error.message || '';
+        const aggregateErrors = Array.isArray(error?.errors) ? error.errors : [error];
+        const firstError = aggregateErrors[0] || error;
+        lastError = firstError;
+        const errorMsg = String(firstError?.message || '');
+
+        const allEndpointsMissing = aggregateErrors.length > 0 && aggregateErrors.every((e: any) => e?.code === 'ENDPOINT_NOT_FOUND');
+        if (allEndpointsMissing) {
+          throw new Error('AI service endpoint is unavailable. Start the local backend proxy or verify deployment routes.');
+        }
+
+        const modelNotFound = aggregateErrors.find((e: any) => e?.code === 'MODEL_NOT_FOUND');
+        if (model === 'z-ai/glm4.7' && modelNotFound) {
+          console.warn('[AI] GLM model not found - falling back to Llama');
+          return callNvidiaAPI(prompt, 'meta/llama-3.1-405b-instruct', temperature, topP);
+        }
 
             if (errorMsg.includes('429') || errorMsg.includes('overloaded') || errorMsg.toLowerCase().includes('too many requests')) {
                 retries--;
                 if (retries > 0) {
-                    await new Promise(res => setTimeout(res, 2000));
+            console.log(`[AI] Rate limited - retrying (${retries} attempts left)`);
+            await new Promise(res => setTimeout(res, 250));
                     continue;
                 }
             }
@@ -134,34 +187,70 @@ const callNvidiaAPI = async (
             if (
                 errorMsg.includes('sign in') ||
                 errorMsg.includes('expired') ||
-                errorMsg.includes('timed out') ||
-                error?.name === 'AbortError'
+              firstError?.status === 401 ||
+              firstError?.status === 403
             ) {
-                throw error;
+              throw firstError;
             }
 
             retries--;
-            if (retries <= 0) {
-                throw lastError || new Error('AI request failed after multiple attempts. Please try again.');
+            if (retries > 0) {
+                console.warn(`[AI] Request failed - retrying (${retries} attempts left):`, errorMsg);
+              await new Promise(res => setTimeout(res, 150));
+                continue;
             }
         }
     }
 
-    throw lastError || new Error('AI request failed after retries');
+    throw lastError || new Error('AI request failed after all retry attempts. Please try again later.');
 };
 
 
 /**
- * Parse JSON from text response, handling markdown code blocks
+ * Parse JSON from text response, handling markdown code blocks and format variations
  */
 const parseJsonResponse = <T,>(text: string): T => {
     try {
         const trimmed = text.trim();
-        const jsonText = trimmed.replace(/^```json\s*|```\s*$/g, '').replace(/^```\s*|```\s*$/g, '');
-        return JSON.parse(jsonText) as T;
-    } catch (e) {
-        console.error("Failed to parse JSON response:", text);
-        throw new Error("Invalid JSON response from API.");
+        
+        // Handle markdown code blocks (json, no language specified)
+        let jsonText = trimmed
+            .replace(/^```(?:json)?\s*\n?/i, '') // Remove opening fence
+            .replace(/\n?```\s*$/i, '');           // Remove closing fence
+        
+        jsonText = jsonText.trim();
+        
+        if (!jsonText) {
+            throw new Error("Empty response from API");
+        }
+        
+        // Try parsing directly
+        try {
+            return JSON.parse(jsonText) as T;
+        } catch (parseErr: any) {
+            console.warn("[JSON Parse] Direct parse failed, attempting recovery", parseErr.message);
+            
+            // Try to recover partial JSON if it exists
+            if (jsonText.includes('{')) {
+                const jsonStart = jsonText.indexOf('{');
+                const jsonEnd = jsonText.lastIndexOf('}');
+                
+                if (jsonStart >= 0 && jsonEnd > jsonStart) {
+                    const extractedJson = jsonText.substring(jsonStart, jsonEnd + 1);
+                    try {
+                        return JSON.parse(extractedJson) as T;
+                    } catch {
+                        console.warn("[JSON Parse] Extracted JSON still invalid");
+                    }
+                }
+            }
+            
+            throw parseErr;
+        }
+    } catch (e: any) {
+        console.error("[JSON Parse] FATAL - Failed to parse JSON response:", text);
+        console.error("[JSON Parse] Error:", e.message);
+        throw new Error(`Invalid API response format: ${e.message}`);
     }
 };
 

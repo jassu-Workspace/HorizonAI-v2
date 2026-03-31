@@ -6,11 +6,11 @@
 import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
-const NVIDIA_BASE_URL = process.env.NVIDIA_API_BASE || 'https://integrate.api.nvidia.com/v1';
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+const NVIDIA_BASE_URL = process.env.NVIDIA_API_BASE || process.env.VITE_NVIDIA_API_BASE || 'https://integrate.api.nvidia.com/v1';
 
-const MODEL = 'meta/llama-3.1-405b-instruct';
+const FALLBACK_MODELS = ['meta/llama-3.1-405b-instruct', 'mistralai/mistral-7b-instruct-v0.2'] as const;
 
 // Parse ALLOWED_ORIGINS from env
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
@@ -91,12 +91,35 @@ const setCorsHeaders = (req: any, res: any): boolean => {
     return isAllowed;
 };
 
-const pickApiKey = (): string => {
+const pickApiKeys = (): string[] => {
+    return [
+        String(process.env.NVIDIA_API_KEY_2 || '').trim(),
+        String(process.env.NVIDIA_API_KEY_1 || '').trim(),
+        String(process.env.NVIDIA_API_KEY_3 || '').trim(),
+        String(process.env.NVIDIA_API_KEY || process.env.VITE_NVIDIA_API_KEY || '').trim(),
+    ].filter(Boolean);
+};
+
+const canRetryWithoutJsonFormat = (error: any): boolean => {
+    const message = String(error?.message || '').toLowerCase();
     return (
-        String(process.env.NVIDIA_API_KEY_2 || '').trim() ||
-        String(process.env.NVIDIA_API_KEY_1 || '').trim() ||
-        String(process.env.NVIDIA_API_KEY_3 || '').trim() ||
-        String(process.env.NVIDIA_API_KEY || '').trim()
+        message.includes('response_format') ||
+        message.includes('json_object') ||
+        message.includes('invalid request') ||
+        message.includes('unsupported')
+    );
+};
+
+const isTransientProviderError = (error: any): boolean => {
+    const message = String(error?.message || '').toLowerCase();
+    const status = Number(error?.status || error?.code || 0);
+    return (
+        status === 429 ||
+        status >= 500 ||
+        message.includes('429') ||
+        message.includes('rate limit') ||
+        message.includes('overloaded') ||
+        message.includes('timeout')
     );
 };
 
@@ -104,6 +127,68 @@ const parseJsonResponse = <T,>(text: string): T => {
     const trimmed = text.trim();
     const jsonText = trimmed.replace(/^```json\s*|```\s*$/g, '').replace(/^```\s*|```\s*$/g, '');
     return JSON.parse(jsonText) as T;
+};
+
+const extractFirstJsonObject = (text: string): string => {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+        return text.slice(start, end + 1);
+    }
+    return text;
+};
+
+const isRoadmapValid = (parsed: Record<string, unknown> | null): boolean => {
+    return Boolean(parsed && Array.isArray((parsed as any).roadmap) && (parsed as any).roadmap.length > 0);
+};
+
+const requestRoadmapCandidate = async (
+    apiKey: string,
+    model: (typeof FALLBACK_MODELS)[number],
+    prompt: string,
+): Promise<Record<string, unknown>> => {
+    const client = new OpenAI({
+        apiKey,
+        baseURL: NVIDIA_BASE_URL,
+    });
+
+    let content = '';
+
+    try {
+        const completion = await client.chat.completions.create({
+            model,
+            messages: [{ role: 'user', content: prompt }],
+            temperature: 0.3,
+            top_p: 0.7,
+            max_tokens: 4000,
+            response_format: { type: 'json_object' },
+        });
+        content = String(completion.choices?.[0]?.message?.content || '');
+    } catch (error: any) {
+        if (!canRetryWithoutJsonFormat(error)) {
+            throw error;
+        }
+
+        const completion = await client.chat.completions.create({
+            model,
+            messages: [{ role: 'user', content: prompt }],
+            temperature: 0.3,
+            top_p: 0.7,
+            max_tokens: 4000,
+        });
+        content = String(completion.choices?.[0]?.message?.content || '');
+    }
+
+    if (!content) {
+        throw new Error('AI returned an empty response.');
+    }
+
+    const parsed = parseJsonResponse<Record<string, unknown>>(extractFirstJsonObject(content));
+    if (!isRoadmapValid(parsed)) {
+        throw new Error('AI response is incomplete.');
+    }
+
+    return parsed;
 };
 
 const updateJob = async (client: any, jobId: string, patch: Record<string, unknown>) => {
@@ -118,8 +203,8 @@ const updateJob = async (client: any, jobId: string, patch: Record<string, unkno
 };
 
 const generateRoadmap = async (payload: any): Promise<Record<string, unknown>> => {
-    const apiKey = pickApiKey();
-    if (!apiKey) {
+    const apiKeys = pickApiKeys();
+    if (apiKeys.length === 0) {
         throw new Error('AI provider is not configured. Please contact support.');
     }
 
@@ -153,34 +238,40 @@ Constraints:
 - User context: ${JSON.stringify(profile).slice(0, 3000)}
 Only return JSON. Do not include any markdown formatting or code blocks.`;
 
-    const client = new OpenAI({
-        apiKey,
-        baseURL: NVIDIA_BASE_URL,
-        timeout: 55000, // 55s, under Vercel's 60s limit
-    });
-
-    const completion = await client.chat.completions.create({
-        model: MODEL,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.3,
-        top_p: 0.7,
-        max_tokens: 4000,
-        response_format: { type: 'json_object' },
-    });
-
-    const content = String(completion.choices?.[0]?.message?.content || '');
-    if (!content) {
-        throw new Error('AI returned an empty response. Please try again.');
+    const candidates: Array<{ apiKey: string; model: (typeof FALLBACK_MODELS)[number] }> = [];
+    for (const apiKey of apiKeys) {
+        for (const model of FALLBACK_MODELS) {
+            candidates.push({ apiKey, model });
+        }
     }
 
-    let parsed: Record<string, unknown>;
-    try {
-        parsed = parseJsonResponse<Record<string, unknown>>(content);
-    } catch {
-        throw new Error('AI returned an unexpected format. Please try again.');
+    let parsed: Record<string, unknown> | null = null;
+    let lastError: any = null;
+    const concurrency = 2;
+
+    for (let i = 0; i < candidates.length; i += concurrency) {
+        const batch = candidates.slice(i, i + concurrency);
+        try {
+            parsed = await Promise.any(
+                batch.map(candidate => requestRoadmapCandidate(candidate.apiKey, candidate.model, prompt)),
+            );
+            break;
+        } catch (error: any) {
+            const errors = Array.isArray(error?.errors) ? error.errors : [error];
+            const transient = errors.find((e: any) => isTransientProviderError(e));
+            lastError = transient || errors[0] || error;
+        }
     }
 
-    if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as any).roadmap)) {
+    if (!parsed) {
+        const message = String(lastError?.message || '').toLowerCase();
+        if (message.includes('not configured')) {
+            throw new Error('AI provider is not configured. Please contact support.');
+        }
+        throw new Error('AI service is temporarily unavailable. Please try again in a moment.');
+    }
+
+    if (!Array.isArray((parsed as any).roadmap)) {
         throw new Error('AI response is incomplete. Please try again.');
     }
 

@@ -6,12 +6,28 @@ interface AuthProps {
 }
 
 const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
+    const AUTH_REQUEST_TIMEOUT_MS = 15000;
     const [isLogin, setIsLogin] = useState(true);
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [infoMessage, setInfoMessage] = useState('');
+
+    const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
+        let timeoutId: number | null = null;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+            timeoutId = window.setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+        });
+
+        try {
+            return await Promise.race([promise, timeoutPromise]) as T;
+        } finally {
+            if (timeoutId !== null) {
+                window.clearTimeout(timeoutId);
+            }
+        }
+    };
 
     const handleAuth = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -21,7 +37,11 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
 
         try {
             if (isLogin) {
-                const { error } = await supabase.auth.signInWithPassword({ email, password });
+                const { error } = await withTimeout<any>(
+                    supabase.auth.signInWithPassword({ email, password }),
+                    AUTH_REQUEST_TIMEOUT_MS,
+                    'Login request timed out. Please check your internet connection and try again.'
+                );
                 if (error) {
                     if (error.message.includes("Email not confirmed")) {
                         throw new Error("Please check your email inbox to confirm your account before logging in.");
@@ -32,7 +52,11 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
                     throw error;
                 }
             } else {
-                const { data, error } = await supabase.auth.signUp({ email, password });
+                const { data, error } = await withTimeout<any>(
+                    supabase.auth.signUp({ email, password }),
+                    AUTH_REQUEST_TIMEOUT_MS,
+                    'Signup request timed out. Please check your internet connection and try again.'
+                );
 
                 if (error) throw error;
                 if (data.user && !data.session) {
@@ -53,9 +77,13 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
         setLoading(true);
         setError('');
         try {
-            const { error } = await supabase.auth.signInWithOAuth({
-                provider: 'google',
-            });
+            const { error } = await withTimeout<any>(
+                supabase.auth.signInWithOAuth({
+                    provider: 'google',
+                }),
+                AUTH_REQUEST_TIMEOUT_MS,
+                'Google sign-in timed out. Please try again.'
+            );
             if (error) throw error;
             // Supabase handles the redirect. onAuthSuccess will be called after the user returns.
         } catch (err: any) {

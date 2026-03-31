@@ -25,10 +25,10 @@ import { generateDeviceFingerprint, detectDeviceAnomalies, deviceTracker } from 
 import { detectAbuseSignals, analyzeCostPattern, promptHistory } from '../lib/behavioral-analysis';
 
 // Constants
-const NVIDIA_BASE_URL = process.env.NVIDIA_API_BASE || 'https://integrate.api.nvidia.com/v1';
+const NVIDIA_BASE_URL = process.env.NVIDIA_API_BASE || process.env.VITE_NVIDIA_API_BASE || 'https://integrate.api.nvidia.com/v1';
 const RATE_LIMIT_COOLDOWN_MS = Number(process.env.NVIDIA_KEY_RATE_LIMIT_COOLDOWN_MS || 65000);
 const ERROR_COOLDOWN_MS = Number(process.env.NVIDIA_KEY_ERROR_COOLDOWN_MS || 8000);
-const MAX_RETRIES_PER_REQUEST = Number(process.env.NVIDIA_KEY_MAX_RETRIES || 6);
+const MAX_RETRIES_PER_REQUEST = Number(process.env.NVIDIA_KEY_MAX_RETRIES || 3);
 
 const MAX_MESSAGES = Number(process.env.AI_MAX_MESSAGES || 20);
 const MAX_MESSAGE_LENGTH = Number(process.env.AI_MAX_MESSAGE_LENGTH || 4000);
@@ -45,8 +45,8 @@ const ABUSE_SCORE_THROTTLE_THRESHOLD = Number(process.env.AI_ABUSE_SCORE_THROTTL
 const ABUSE_SCORE_BLOCK_THRESHOLD = Number(process.env.AI_ABUSE_SCORE_BLOCK || 70);
 const ABUSE_SCORE_BAN_THRESHOLD = Number(process.env.AI_ABUSE_SCORE_BAN || 90);
 
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 
 // Parse ALLOWED_ORIGINS from env — empty means allow all (for dev convenience)
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
@@ -75,7 +75,7 @@ const keyPool: KeyState[] = [
     { slot: 1, key: (process.env.NVIDIA_API_KEY_1 || '').trim(), label: 'key-1' },
     { slot: 2, key: (process.env.NVIDIA_API_KEY_2 || '').trim(), label: 'key-2' },
     { slot: 3, key: (process.env.NVIDIA_API_KEY_3 || '').trim(), label: 'key-3' },
-    { slot: 0, key: (process.env.NVIDIA_API_KEY || '').trim(), label: 'key-default' },
+    { slot: 0, key: (process.env.NVIDIA_API_KEY || process.env.VITE_NVIDIA_API_KEY || '').trim(), label: 'key-default' },
 ]
     .filter(item => Boolean(item.key))
     .map(item => ({
@@ -128,6 +128,16 @@ const isNotFoundError = (error: any): boolean => {
     return status === 404 || message.includes('404') || message.includes('not found');
 };
 
+const canRetryWithoutJsonFormat = (error: any): boolean => {
+    const message = String(error?.message || '').toLowerCase();
+    return (
+        message.includes('response_format') ||
+        message.includes('json_object') ||
+        message.includes('invalid request') ||
+        message.includes('unsupported')
+    );
+};
+
 const getAvailableKeys = (): KeyState[] => {
     const now = Date.now();
     return keyPool.filter(k => now >= k.cooldownUntil);
@@ -174,7 +184,6 @@ const createClientForKey = (apiKey: string) =>
     new OpenAI({
         apiKey,
         baseURL: NVIDIA_BASE_URL,
-        timeout: 55000, // 55s timeout (under Vercel's 60s limit)
     });
 
 const getClientIp = (req: any): string => {
@@ -300,7 +309,7 @@ const callInternalRateLimit = async (
 
     try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
 
         const response = await fetch(`${baseUrl}${path}`, {
             method: 'POST',
@@ -321,6 +330,38 @@ const callInternalRateLimit = async (
         return response.json();
     } catch {
         return null;
+    }
+};
+
+const createCompletion = async (
+    client: OpenAI,
+    model: string,
+    sanitizedMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    temperature: number,
+    topP: number,
+    maxTokens: number,
+) => {
+    try {
+        return await client.chat.completions.create({
+            model,
+            messages: sanitizedMessages,
+            temperature,
+            top_p: topP,
+            max_tokens: maxTokens,
+            response_format: { type: 'json_object' },
+        });
+    } catch (error: any) {
+        if (!canRetryWithoutJsonFormat(error)) {
+            throw error;
+        }
+
+        return client.chat.completions.create({
+            model,
+            messages: sanitizedMessages,
+            temperature,
+            top_p: topP,
+            max_tokens: maxTokens,
+        });
     }
 };
 
@@ -641,21 +682,21 @@ export default async function handler(req: any, res: any) {
             if (!keyState) {
                 const soonest = Math.min(...keyPool.map(k => k.cooldownUntil));
                 const waitMs = Math.max(300, soonest - Date.now());
-                if (waitMs > 30000) break; // Don't wait more than 30s
+                if (waitMs > 1500) break;
                 await wait(waitMs);
                 continue;
             }
 
             try {
                 const client = createClientForKey(keyState.key);
-                const completion = await client.chat.completions.create({
-                    model: payload.model,
-                    messages: sanitizedMessages,
-                    temperature: payload.temperature ?? 0.3,
-                    top_p: payload.top_p ?? 0.7,
-                    max_tokens: requestedOutputTokens,
-                    response_format: { type: 'json_object' },
-                });
+                const completion = await createCompletion(
+                    client,
+                    payload.model,
+                    sanitizedMessages,
+                    payload.temperature ?? 0.3,
+                    payload.top_p ?? 0.7,
+                    requestedOutputTokens,
+                );
 
                 keyState.failures = 0;
                 keyState.cooldownUntil = 0;
@@ -686,14 +727,14 @@ export default async function handler(req: any, res: any) {
 
                         if (fallbackKeyState) {
                             const fallbackClient = createClientForKey(fallbackKeyState.key);
-                            const completion = await fallbackClient.chat.completions.create({
-                                model: fallbackModel,
-                                messages: sanitizedMessages,
-                                temperature: payload.temperature ?? 0.3,
-                                top_p: payload.top_p ?? 0.7,
-                                max_tokens: requestedOutputTokens,
-                                response_format: { type: 'json_object' },
-                            });
+                            const completion = await createCompletion(
+                                fallbackClient,
+                                fallbackModel,
+                                sanitizedMessages,
+                                payload.temperature ?? 0.3,
+                                payload.top_p ?? 0.7,
+                                requestedOutputTokens,
+                            );
 
                             fallbackKeyState.failures = 0;
                             fallbackKeyState.cooldownUntil = 0;

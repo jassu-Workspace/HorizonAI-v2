@@ -50,28 +50,32 @@ alter table public.profiles add column if not exists updated_at timestamptz defa
 alter table public.profiles enable row level security;
 
 update public.profiles
-set role = 'admin'
-where role = 'policymaker';
+set role = case
+  when role is null then 'user'
+  when lower(trim(role)) in ('policymaker', 'administrator', 'superadmin', 'owner') then 'admin'
+  when lower(trim(role)) in ('learner', 'student', 'member', 'basic', 'normal') then 'user'
+  when lower(trim(role)) in ('mentor', 'coach') then 'trainer'
+  when lower(trim(role)) in ('user', 'trainer', 'admin') then lower(trim(role))
+  else 'user'
+end;
+
+alter table public.profiles
+  alter column role set default 'user';
 
 update public.profiles
 set role = 'user'
-where role = 'learner'
-   or role is null
+where role is null
    or role not in ('user', 'trainer', 'admin');
 
-do $$
-begin
-  if not exists (
-    select 1
-    from pg_constraint
-    where conname = 'profiles_role_check'
-      and conrelid = 'public.profiles'::regclass
-  ) then
-    alter table public.profiles
-      add constraint profiles_role_check
-      check (role in ('user', 'trainer', 'admin'));
-  end if;
-end $$;
+alter table public.profiles
+  alter column role set not null;
+
+alter table public.profiles
+  drop constraint if exists profiles_role_check;
+
+alter table public.profiles
+  add constraint profiles_role_check
+  check (role in ('user', 'trainer', 'admin'));
 
 create or replace function public.prevent_client_role_escalation()
 returns trigger
@@ -130,9 +134,6 @@ to authenticated
 using (auth.uid()::text = id::text)
 with check (auth.uid()::text = id::text);
 
--- =========================
--- AI USAGE QUOTAS
--- =========================
 create table if not exists public.ai_usage_daily (
   user_id uuid not null,
   usage_date date not null,

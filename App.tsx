@@ -170,7 +170,7 @@ const App: React.FC = () => {
             resolveRoadmapJob(jobId).catch(() => {
                 // Keep polling through transient network failures.
             });
-        }, 3000);
+        }, 1000);
     };
 
     useEffect(() => {
@@ -207,7 +207,10 @@ const App: React.FC = () => {
 
     useEffect(() => {
         const { data: subscription } = supabase.auth.onAuthStateChange(async (event) => {
+            console.log("[Auth] State change:", event);
+            
             if (event === 'SIGNED_OUT') {
+                console.log("[Auth] User signed out");
                 setIsAuthenticated(false);
                 setAuthResolved(true);
                 clearWorkflowState();
@@ -215,15 +218,23 @@ const App: React.FC = () => {
                 navigate('/login');
             }
 
-            if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+            if (event === 'SIGNED_IN') {
+                console.log("[Auth] User signed in - running session check");
+                await checkSession();
+            }
+
+            if (event === 'TOKEN_REFRESHED') {
+                console.log("[Auth] Token refreshed");
                 await checkSession();
             }
         });
 
         return () => {
-            subscription.subscription.unsubscribe();
+            if (subscription?.subscription) {
+                subscription.subscription.unsubscribe();
+            }
         };
-    }, []);
+    }, [navigate, location.pathname]);
 
     useEffect(() => {
         return () => {
@@ -283,13 +294,18 @@ const App: React.FC = () => {
     const checkSession = async () => {
         try {
             const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-            if (sessionError) throw sessionError;
+            if (sessionError) {
+                console.error("[Auth] Session error:", sessionError);
+                throw sessionError;
+            }
     
-            if (session) {
+            if (session && session.user) {
+                console.log("[Auth] Session found, checking profile for user:", session.user.id);
                 setIsAuthenticated(true);
                 let profile = await getCurrentProfile();
                 
                 if (!profile) {
+                    console.log("[Auth] No profile found - creating stub profile");
                     const stubProfile: UserProfile = {
                         id: session.user.id,
                         role: 'user',
@@ -297,29 +313,49 @@ const App: React.FC = () => {
                         skills: '', interests: '',
                         learningStyle: 'Balanced', academicLevel: 'Graduation', stream: 'General', focusArea: 'General'
                     };
-                    await saveProfileFromOnboarding(stubProfile);
-                    profile = stubProfile;
+                    try {
+                        await saveProfileFromOnboarding(stubProfile);
+                        console.log("[Auth] Stub profile created successfully");
+                        const refetchedProfile = await getCurrentProfile();
+                        if (refetchedProfile) {
+                            profile = refetchedProfile;
+                        } else {
+                            throw new Error("Profile was created but could not be fetched back from database.");
+                        }
+                    } catch (profileError: any) {
+                        console.error("[Auth] CRITICAL - Profile creation failed:", profileError);
+                        setErrorMessage(`Account setup failed: ${profileError?.message || 'Please try again'}`);
+                        setIsAuthenticated(false);
+                        navigate('/login');
+                        setAuthResolved(true);
+                        return;
+                    }
                 }
 
                 if (profile) {
+                    console.log("[Auth] Profile loaded, setting user context");
                     setUserProfile(profile);
 
                     if (location.pathname === '/login' || location.pathname === '/auth' || location.pathname === '/') {
+                        console.log("[Auth] Redirecting from auth page to /create");
                         navigate('/create');
                     }
                 } else {
+                    console.error("[Auth] Profile still null after all attempts");
                     setIsAuthenticated(false);
+                    setErrorMessage("Could not load your profile. Please try logging in again.");
                     navigate('/login');
                 }
             } else {
+                console.log("[Auth] No active session found");
                 setIsAuthenticated(false);
                 if (location.pathname !== '/login' && location.pathname !== '/auth') {
                     navigate('/login');
                 }
             }
         } catch (error: any) {
-            console.error("Error during session check:", error);
-            setErrorMessage("Could not connect to your session. Please check your internet connection and try again.");
+            console.error("[Auth] CRITICAL ERROR during session check:", error);
+            setErrorMessage(error?.message || "Could not connect to your session. Please check your internet connection and try again.");
             setIsAuthenticated(false);
             navigate('/login');
         } finally {

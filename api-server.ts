@@ -50,8 +50,8 @@ type KeyState = {
 
 const NVIDIA_BASE_URL = process.env.NVIDIA_API_BASE || 'https://integrate.api.nvidia.com/v1';
 const RATE_LIMIT_COOLDOWN_MS = Number(process.env.NVIDIA_KEY_RATE_LIMIT_COOLDOWN_MS || 65000);
-const ERROR_COOLDOWN_MS = Number(process.env.NVIDIA_KEY_ERROR_COOLDOWN_MS || 8000);
-const MAX_RETRIES_PER_REQUEST = Number(process.env.NVIDIA_KEY_MAX_RETRIES || 6);
+const ERROR_COOLDOWN_MS = Number(process.env.NVIDIA_KEY_ERROR_COOLDOWN_MS || 3000); // Reduced from 8s to 3s for faster recovery
+const MAX_RETRIES_PER_REQUEST = Number(process.env.NVIDIA_KEY_MAX_RETRIES || 3);
 
 const keyPool: KeyState[] = [
     { slot: 1, key: (process.env.NVIDIA_API_KEY_1 || '').trim(), label: 'key-1' },
@@ -233,6 +233,7 @@ app.post('/api/chat', async (req, res) => {
             if (!keyState) {
                 const soonest = Math.min(...keyPool.map(k => k.cooldownUntil));
                 const waitMs = Math.max(300, soonest - Date.now());
+                if (waitMs > 1500) break;
                 await wait(waitMs);
                 continue;
             }

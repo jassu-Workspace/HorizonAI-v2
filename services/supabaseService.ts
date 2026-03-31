@@ -148,12 +148,9 @@ export const saveProfileFromOnboarding = async (profile: UserProfile) => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error("User not authenticated.");
 
-    const userRole: 'user' = 'user';
-
     const profileData = {
         id: user.id,
         full_name: profile.fullName,
-        role: userRole,
         academic_level: profile.academicLevel,
         stream: profile.stream,
         academic_course: profile.academicCourse, // Store Branch here
@@ -182,7 +179,6 @@ export const saveProfileFromOnboarding = async (profile: UserProfile) => {
         const minimalProfileData = {
             id: user.id,
             full_name: profile.fullName,
-            role: userRole,
             academic_level: profile.academicLevel,
             stream: profile.stream,
             academic_course: profile.academicCourse,
