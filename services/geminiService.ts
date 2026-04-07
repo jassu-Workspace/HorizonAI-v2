@@ -517,6 +517,7 @@ CRITICAL CONSTRAINTS:
 
 Response MUST be valid JSON only (no markdown, no extra text):
 {"quiz":[{"question":"What is X?","options":["Option A","Option B","Option C","Option D"],"correctAnswer":"Option C"},...]}`;
+};
 
 export const getRoadmap = async (skillName: string, weeks: string, level: string, profile: UserProfile): Promise<RoadmapData> => {
     const userContext = generateComprehensiveUserContext(profile);
