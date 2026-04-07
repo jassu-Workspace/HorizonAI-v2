@@ -8,13 +8,20 @@ Welcome to the complete documentation hub for the Final Horizon AI project. All 
 
 ### Core Documentation
 
-1. **[README_MAIN.md](./README_MAIN.md)** ⭐ **START HERE**
+1. **[PHILOSOPHY_AND_APPROACH.md](./PHILOSOPHY_AND_APPROACH.md)** 🌟 **READ THIS FIRST**
+   - Simple explanation of how Horizon AI works
+   - Our beliefs and approach (no technical jargon!)
+   - How your learning journey flows
+   - Tech stack explained in plain English
+   - Perfect for everyone, including beginners
+
+2. **[README_MAIN.md](./README_MAIN.md)** ⭐ **MAIN GUIDE**
    - Project overview
    - Getting started guide
    - Installation instructions
    - Basic usage
 
-2. **[AUTHENTICATION_GUIDE.md](./AUTHENTICATION_GUIDE.md)** 🔐 **NEW**
+3. **[AUTHENTICATION_GUIDE.md](./AUTHENTICATION_GUIDE.md)** 🔐 **FOR DEVELOPERS**
    - Complete Supabase authentication setup
    - Google OAuth and Email/Password login
    - Real-time session management
@@ -23,15 +30,19 @@ Welcome to the complete documentation hub for the Final Horizon AI project. All 
    - Security best practices
    - Production checklist
 
----
-
 ### Setup & Deployment
 
-3. **[SETUP_COMPLETE.md](./SETUP_COMPLETE.md)**
+3. **[DATABASE_SETUP_GUIDE.md](./DATABASE_SETUP_GUIDE.md)** 🔧 **GETTING STARTED**
+   - Fix "relation 'users' does not exist" error
+   - Step-by-step database setup
+   - What each step does
+   - Troubleshooting
+
+4. **[SETUP_COMPLETE.md](./SETUP_COMPLETE.md)**
    - Initial project setup confirmation
    - Next steps checklist
 
-4. **[DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md)**
+5. **[DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md)**
    - Pre-deployment verification
    - Production deployment steps
    - Environment configuration
@@ -89,10 +100,19 @@ Welcome to the complete documentation hub for the Final Horizon AI project. All 
 
 ## 🚀 Getting Started
 
-### First Time?
-1. Read [README_MAIN.md](./README_MAIN.md)
-2. Follow the installation steps
-3. Review [AUTHENTICATION_GUIDE.md](./AUTHENTICATION_GUIDE.md) for auth setup
+### First Time Users?
+→ Start with **[PHILOSOPHY_AND_APPROACH.md](./PHILOSOPHY_AND_APPROACH.md)**
+- No technical knowledge needed
+- Simple language explanation
+- Understand the "why" behind everything
+
+### Then Follow Onboarding
+→ Go to main **[README.md](../README.md)** for the 6-step quick start
+
+### Getting Database Error?
+→ See **[DATABASE_SETUP_GUIDE.md](./DATABASE_SETUP_GUIDE.md)**
+- "relation 'users' does not exist" fix
+- Step-by-step with pictures
 
 ### Setting Up Authentication?
 → See [AUTHENTICATION_GUIDE.md](./AUTHENTICATION_GUIDE.md)

@@ -33,6 +33,7 @@ import ProfileEditModal from './components/ProfileEditModal';
 import ImportModal from './components/ImportModal';
 import ShareModal from './components/ShareModal';
 import WeekAssessmentModal from './components/WeekAssessmentModal';
+import CookieConsent from './components/CookieConsent';
 import {
     createRoadmapJob,
     runJob,
@@ -1071,6 +1072,7 @@ const App: React.FC = () => {
                     )}
                 </Modal>
             )}
+            <CookieConsent />
         </div>
     );
 };
