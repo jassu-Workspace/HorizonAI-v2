@@ -125,6 +125,9 @@ export const levenshteinDistance = (a: string, b: string): number => {
 export const calculateSimilarity = (a: string, b: string): number => {
     const distance = levenshteinDistance(a, b);
     const maxLen = Math.max(a.length, b.length);
+    if (maxLen === 0) {
+        return 1;
+    }
     return 1 - distance / maxLen;
 };
 
@@ -211,16 +214,20 @@ export const ngramSimilarity = (a: string, b: string, n: number = 3): number => 
  * Stores hash-compressed history to avoid OOM on large conversations
  */
 export class PromptHistory {
-    private history: Map<string, string[]> = new Map(); // userId -> prompt hashes
+    private history: Map<string, string[]> = new Map(); // userId -> normalized prompt signatures
     private maxHistoryPerUser: number = 50;
 
     addPrompt(userId: string, prompt: string): void {
-        const hash = generatePromptHash(prompt);
+        const signature = normalizePromptForHistory(prompt);
+        if (!signature) {
+            return;
+        }
+
         const userHistory = this.history.get(userId) || [];
 
         // Avoid duplicates
-        if (!userHistory.includes(hash)) {
-            userHistory.push(hash);
+        if (!userHistory.includes(signature)) {
+            userHistory.push(signature);
 
             // Keep only recent N prompts
             if (userHistory.length > this.maxHistoryPerUser) {
@@ -245,21 +252,22 @@ export class PromptHistory {
         if (this.history.size > 10000) {
             const iterator = this.history.entries();
             for (let i = 0; i < 1000; i++) {
-                iterator.next().value && this.history.delete(iterator.next().value![0]);
+                const next = iterator.next();
+                if (next.done || !next.value) {
+                    break;
+                }
+                this.history.delete(next.value[0]);
             }
         }
     }
 }
 
-const generatePromptHash = (prompt: string): string => {
-    // Simple rolling hash for memory efficiency
-    let hash = 0;
-    for (let i = 0; i < prompt.length; i++) {
-        const char = prompt.charCodeAt(i);
-        hash = (hash << 5) - hash + char;
-        hash |= 0; // Convert to 32bit integer
-    }
-    return String(hash);
+const normalizePromptForHistory = (prompt: string): string => {
+    return String(prompt || '')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 1200);
 };
 
 export const promptHistory = new PromptHistory();

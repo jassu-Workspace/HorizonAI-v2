@@ -374,7 +374,7 @@ const Roadmap: React.FC<RoadmapProps> = ({ data, userProfile, onStartOver, onFea
              )}
             
             <div className="text-center mb-6">
-                <h2 className="text-4xl font-extrabold text-slate-900 dark:text-white" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+                <h2 className="roadmap-title-font text-4xl font-extrabold text-slate-900 dark:text-white">
                     {isReadOnly ? `Preview: Path to ${data.skill}` : `Your Path to Mastering ${data.skill}`}
                 </h2>
                 <p className="text-slate-600 dark:text-slate-300 mt-2">A {data.roadmap.length}-week learning journey.</p>
@@ -386,14 +386,7 @@ const Roadmap: React.FC<RoadmapProps> = ({ data, userProfile, onStartOver, onFea
                     <span className="text-sm font-bold text-slate-700 dark:text-slate-200">Total Progress</span>
                     <span className="text-sm font-bold text-blue-600 dark:text-blue-400">{percentage}%</span>
                 </div>
-                <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-4 overflow-hidden border border-slate-300 dark:border-slate-600">
-                    <div 
-                        className="bg-gradient-to-r from-blue-500 to-indigo-600 h-4 rounded-full transition-all duration-1000 ease-out flex items-center justify-end pr-2" 
-                        style={{ width: `${percentage}%` }}
-                    >
-                        {percentage > 5 && <div className="w-2 h-2 bg-white/50 rounded-full animate-pulse"></div>}
-                    </div>
-                </div>
+                <progress className="roadmap-progress-bar" value={percentage} max={100} aria-label="Roadmap completion progress" />
             </div>
 
             <div className="glass-card p-5 mb-8">

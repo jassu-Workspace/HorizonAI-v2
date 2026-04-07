@@ -1,7 +1,15 @@
 /**
- * API Proxy Server
+ * API Proxy Server - Production Hardened
  * Handles requests to NVIDIA API to avoid CORS issues
  * Runs on a dedicated backend port, Frontend calls this instead of NVIDIA directly
+ *
+ * Production Features:
+ * - Gzip compression
+ * - Request logging with metadata
+ * - Error handling with proper status codes
+ * - Security headers
+ * - Key rotation and failover
+ * - Rate limiting with cooldown
  */
 
 import dotenv from 'dotenv';
@@ -9,12 +17,14 @@ import express from 'express';
 import cors from 'cors';
 import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
+import compression from 'compression';
 
 // Load environment variables from .env file
 dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.BACKEND_PORT || 3004);
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
@@ -23,13 +33,29 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,h
     .map(origin => origin.trim())
     .filter(Boolean);
 
+const isLocalhostOrigin = (origin: string): boolean => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+const isVercelPreviewOrigin = (origin: string): boolean => /^https:\/\/[a-z0-9-]+-[a-z0-9]+-[a-z0-9]+\.vercel\.app$/.test(origin);
+
+// Gzip compression middleware
+app.use(compression({ level: 6, threshold: 512 }));
+
 app.use(
     cors({
         origin: (origin, callback) => {
-            if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+            if (!origin) {
                 callback(null, true);
                 return;
             }
+
+            const isExplicitlyAllowed = ALLOWED_ORIGINS.includes(origin);
+            const allowDevFallback = !IS_PRODUCTION && ALLOWED_ORIGINS.length === 0 && (isLocalhostOrigin(origin) || isVercelPreviewOrigin(origin));
+            const allowVercelPreview = process.env.VERCEL_ENV === 'preview' && isVercelPreviewOrigin(origin);
+
+            if (isExplicitlyAllowed || allowDevFallback || allowVercelPreview) {
+                callback(null, true);
+                return;
+            }
+
             callback(new Error('Origin not allowed by CORS'));
         },
         methods: ['POST', 'GET', 'OPTIONS'],
@@ -37,7 +63,19 @@ app.use(
         credentials: false,
     }),
 );
-app.use(express.json());
+
+// Security headers middleware
+app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+    res.setHeader('X-Request-ID', req.headers['x-request-id'] || `req_${Date.now()}`);
+    next();
+});
+
+app.use(express.json({ limit: '1mb' }));
 
 type KeyState = {
     slot: number;
@@ -50,7 +88,7 @@ type KeyState = {
 
 const NVIDIA_BASE_URL = process.env.NVIDIA_API_BASE || 'https://integrate.api.nvidia.com/v1';
 const RATE_LIMIT_COOLDOWN_MS = Number(process.env.NVIDIA_KEY_RATE_LIMIT_COOLDOWN_MS || 65000);
-const ERROR_COOLDOWN_MS = Number(process.env.NVIDIA_KEY_ERROR_COOLDOWN_MS || 3000); // Reduced from 8s to 3s for faster recovery
+const ERROR_COOLDOWN_MS = Number(process.env.NVIDIA_KEY_ERROR_COOLDOWN_MS || 3000);
 const MAX_RETRIES_PER_REQUEST = Number(process.env.NVIDIA_KEY_MAX_RETRIES || 3);
 
 const keyPool: KeyState[] = [
@@ -67,7 +105,7 @@ const keyPool: KeyState[] = [
     lastUsedAt: 0,
 }));
 
-// Explicit model-to-key binding requested by product requirements.
+// Explicit model-to-key binding
 const MODEL_TO_KEY_SLOT: Record<string, 1 | 2 | 3> = {
     'glm-4.7': 1,
     'z-ai/glm4.7': 1,
@@ -126,7 +164,6 @@ const pickNextKey = (forModel: string): KeyState | null => {
     const available = getAvailableKeys().filter(k => k.slot === mappedSlot);
     if (available.length === 0) return null;
 
-    // Round-robin over all keys while skipping keys in cooldown.
     for (let i = 0; i < available.length; i++) {
         const idx = (roundRobinPointer + i) % available.length;
         const candidate = available[idx];
@@ -137,7 +174,6 @@ const pickNextKey = (forModel: string): KeyState | null => {
         }
     }
 
-    // Fallback to least recently used from available pool.
     return available.sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0] || null;
 };
 
@@ -190,11 +226,14 @@ app.get('/health', (req, res) => {
         status: 'ok',
         service: 'horizon-api-proxy',
         keysConfigured: keyPool.length,
+        timestamp: new Date().toISOString(),
     });
 });
 
 // Chat completions proxy
 app.post('/api/chat', async (req, res) => {
+    const requestId = req.headers['x-request-id'] || `req_${Date.now()}`;
+
     try {
         const token = readAuthToken(req.header('Authorization'));
         if (!token || !supabaseAuthClient) {
@@ -209,8 +248,17 @@ app.post('/api/chat', async (req, res) => {
         const { model, messages, temperature, top_p, max_tokens } = req.body;
         const requestedModel = normalizeModelName(model);
 
-        if (!model || !messages) {
+        if (!model || !Array.isArray(messages) || messages.length === 0 || messages.length > 20) {
             return res.status(400).json({ error: 'Missing required fields: model, messages' });
+        }
+
+        const messagesAreValid = messages.every((m: any) => {
+            const role = String(m?.role || '');
+            const content = String(m?.content || '');
+            return ['system', 'user', 'assistant'].includes(role) && content.length > 0 && content.length <= 4000;
+        });
+        if (!messagesAreValid) {
+            return res.status(400).json({ error: 'Invalid messages payload' });
         }
 
         if (!MODEL_TO_KEY_SLOT[requestedModel]) {
@@ -220,7 +268,7 @@ app.post('/api/chat', async (req, res) => {
         }
 
         if (keyPool.length === 0) {
-            console.error('Missing NVIDIA API keys. Configure NVIDIA_API_KEYS or NVIDIA_API_KEY_1..3');
+            console.error('[' + requestId + '] Missing NVIDIA API keys');
             return res.status(500).json({ error: 'NVIDIA API keys not configured on server' });
         }
 
@@ -251,6 +299,7 @@ app.post('/api/chat', async (req, res) => {
 
                 keyState.failures = 0;
                 keyState.cooldownUntil = 0;
+                console.log('[' + requestId + '] ✅ Chat completion success via', keyState.label, 'model:', requestedModel);
                 return res.json(completion);
             } catch (error: any) {
                 // Provider-side fallback when requested GLM model id is unavailable.
@@ -271,6 +320,7 @@ app.post('/api/chat', async (req, res) => {
 
                             fallbackKeyState.failures = 0;
                             fallbackKeyState.cooldownUntil = 0;
+                            console.log('[' + requestId + '] ✅ Chat completion success via fallback model:', fallbackModel);
                             return res.json(completion);
                         }
                     } catch (fallbackError: any) {
@@ -283,19 +333,22 @@ app.post('/api/chat', async (req, res) => {
 
                 if (isRateLimitError(error)) {
                     keyState.cooldownUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;
+                    console.warn('[' + requestId + '] ⏱️ Rate limited on', keyState.label);
                 } else {
                     keyState.cooldownUntil = Date.now() + ERROR_COOLDOWN_MS;
+                    console.error('[' + requestId + '] ❌ Error attempt', attempt, ':', String(error?.message || 'unknown'));
                 }
             }
         }
 
         const errorMessage = lastError?.message || 'All NVIDIA API keys failed for this request.';
+        console.error('[' + requestId + '] ❌ All retries exhausted. Key health:', summarizeKeyHealth());
         return res.status(503).json({
             error: errorMessage,
             details: `Mapped key for model '${requestedModel}' is exhausted or cooling down. Retry shortly.`,
         });
     } catch (error: any) {
-        console.error('API Error:', error.message);
+        console.error('[' + requestId + '] 💥 Unhandled error:', error.message);
         res.status(500).json({
             error: error.message || 'API request failed',
             details: error.error?.message || ''
@@ -303,9 +356,26 @@ app.post('/api/chat', async (req, res) => {
     }
 });
 
+// 404 handler
+app.use((req, res) => {
+    res.status(404).json({ error: 'Not found' });
+});
+
+// Error handler
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('Unhandled error:', err);
+    res.status(err.status || 500).json({
+        error: 'Internal server error',
+        message: IS_PRODUCTION ? undefined : err.message,
+    });
+});
+
 app.listen(PORT, () => {
+    console.log(`\n${'='.repeat(70)}`);
     console.log(`✅ API Proxy Server running on http://localhost:${PORT}`);
-    console.log(`📡 NVIDIA API KEYS: ${keyPool.length > 0 ? `${keyPool.length} configured` : 'MISSING'}`);
+    console.log(`📡 NVIDIA API KEYS: ${keyPool.length > 0 ? `${keyPool.length} configured` : '❌ MISSING'}`);
     console.log(`🌐 NVIDIA API BASE: ${NVIDIA_BASE_URL}`);
     console.log(`♻️ Key Rotation: RR enabled | 429 cooldown=${RATE_LIMIT_COOLDOWN_MS}ms | error cooldown=${ERROR_COOLDOWN_MS}ms`);
+    console.log(`🔒 CORS: ${IS_PRODUCTION ? 'Production mode' : 'Dev mode'} | ${ALLOWED_ORIGINS.length} origins configured`);
+    console.log(`${'='.repeat(70)}\n`);
 });

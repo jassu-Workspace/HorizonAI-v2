@@ -1,0 +1,134 @@
+/* Production CSS - Minimal fallback */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+.error-boundary-wrap {
+  padding: 20px;
+  text-align: center;
+  font-family: sans-serif;
+  color: #333;
+}
+
+.error-boundary-details {
+  color: #b91c1c;
+  background: #f0f0f0;
+  padding: 10px;
+  border-radius: 5px;
+  overflow: auto;
+  text-align: left;
+}
+
+.roadmap-title-font {
+  font-family: 'Space Grotesk', sans-serif;
+}
+
+.quiz-progress-bar,
+.roadmap-progress-bar {
+  width: 100%;
+  height: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.roadmap-progress-bar {
+  height: 16px;
+}
+
+.quiz-progress-bar::-webkit-progress-bar,
+.roadmap-progress-bar::-webkit-progress-bar {
+  background: #e2e8f0;
+}
+
+.quiz-progress-bar::-webkit-progress-value {
+  background: #2563eb;
+}
+
+.roadmap-progress-bar::-webkit-progress-value {
+  background: linear-gradient(90deg, #3b82f6, #4f46e5);
+}
+
+.quiz-progress-bar::-moz-progress-bar {
+  background: #2563eb;
+}
+
+.roadmap-progress-bar::-moz-progress-bar {
+  background: linear-gradient(90deg, #3b82f6, #4f46e5);
+}
+
+html.dark .quiz-progress-bar,
+html.dark .roadmap-progress-bar {
+  border-color: #475569;
+}
+
+html.dark .quiz-progress-bar::-webkit-progress-bar,
+html.dark .roadmap-progress-bar::-webkit-progress-bar {
+  background: #334155;
+}
+
+.dashboard-progress-bar {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.dashboard-progress-bar-active {
+  height: 12px;
+}
+
+.dashboard-progress-bar-saved {
+  height: 6px;
+}
+
+.dashboard-progress-bar::-webkit-progress-bar {
+  background: #e2e8f0;
+}
+
+.dashboard-progress-bar-active::-webkit-progress-value {
+  background: linear-gradient(90deg, #3b82f6, #4f46e5);
+}
+
+.dashboard-progress-active::-webkit-progress-value {
+  background: #3b82f6;
+}
+
+.dashboard-progress-complete::-webkit-progress-value {
+  background: #22c55e;
+}
+
+.dashboard-progress-bar-active::-moz-progress-bar {
+  background: linear-gradient(90deg, #3b82f6, #4f46e5);
+}
+
+.dashboard-progress-active::-moz-progress-bar {
+  background: #3b82f6;
+}
+
+.dashboard-progress-complete::-moz-progress-bar {
+  background: #22c55e;
+}
+
+html.dark .dashboard-progress-bar {
+  border-color: #475569;
+}
+
+html.dark .dashboard-progress-bar::-webkit-progress-bar {
+  background: #334155;
+}

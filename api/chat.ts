@@ -25,7 +25,7 @@ import { generateDeviceFingerprint, detectDeviceAnomalies, deviceTracker } from 
 import { detectAbuseSignals, analyzeCostPattern, promptHistory } from '../lib/behavioral-analysis';
 
 // Constants
-const NVIDIA_BASE_URL = process.env.NVIDIA_API_BASE || process.env.VITE_NVIDIA_API_BASE || 'https://integrate.api.nvidia.com/v1';
+const NVIDIA_BASE_URL = process.env.NVIDIA_API_BASE || 'https://integrate.api.nvidia.com/v1';
 const RATE_LIMIT_COOLDOWN_MS = Number(process.env.NVIDIA_KEY_RATE_LIMIT_COOLDOWN_MS || 65000);
 const ERROR_COOLDOWN_MS = Number(process.env.NVIDIA_KEY_ERROR_COOLDOWN_MS || 8000);
 const MAX_RETRIES_PER_REQUEST = Number(process.env.NVIDIA_KEY_MAX_RETRIES || 3);
@@ -41,12 +41,9 @@ const MAX_REQUESTS_PER_5_MIN_IP = Number(process.env.AI_RL_IP_5M || 40);
 const MAX_REQUESTS_PER_5_MIN_USER = Number(process.env.AI_RL_USER_5M || 30);
 const MAX_REQUESTS_PER_5_MIN_DEVICE = Number(process.env.AI_RL_DEVICE_5M || 25);
 
-const ABUSE_SCORE_THROTTLE_THRESHOLD = Number(process.env.AI_ABUSE_SCORE_THROTTLE || 50);
-const ABUSE_SCORE_BLOCK_THRESHOLD = Number(process.env.AI_ABUSE_SCORE_BLOCK || 70);
-const ABUSE_SCORE_BAN_THRESHOLD = Number(process.env.AI_ABUSE_SCORE_BAN || 90);
-
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 // Parse ALLOWED_ORIGINS from env — empty means allow all (for dev convenience)
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
@@ -75,7 +72,7 @@ const keyPool: KeyState[] = [
     { slot: 1, key: (process.env.NVIDIA_API_KEY_1 || '').trim(), label: 'key-1' },
     { slot: 2, key: (process.env.NVIDIA_API_KEY_2 || '').trim(), label: 'key-2' },
     { slot: 3, key: (process.env.NVIDIA_API_KEY_3 || '').trim(), label: 'key-3' },
-    { slot: 0, key: (process.env.NVIDIA_API_KEY || process.env.VITE_NVIDIA_API_KEY || '').trim(), label: 'key-default' },
+    { slot: 0, key: (process.env.NVIDIA_API_KEY || '').trim(), label: 'key-default' },
 ]
     .filter(item => Boolean(item.key))
     .map(item => ({
@@ -105,15 +102,26 @@ const chatSchema = z.object({
 
 let roundRobinPointer = 0;
 
-const normalizeModelName = (model: string): (typeof ALLOWED_MODELS)[number] => {
+const normalizeModelName = (model: string): (typeof ALLOWED_MODELS)[number] | null => {
     const normalized = String(model || '').trim().toLowerCase();
+
+    if (normalized === 'z-ai/glm4.7') {
+        return 'z-ai/glm4.7';
+    }
+
     if (normalized === 'glm-4.7' || normalized === 'z.ai/glm4.7' || normalized === 'z.ai glm 4.7') {
         return 'z-ai/glm4.7';
     }
+
     if (normalized === 'meta/llama-3.1-405b-instruct') {
         return 'meta/llama-3.1-405b-instruct';
     }
-    return 'mistralai/mistral-7b-instruct-v0.2';
+
+    if (normalized === 'mistralai/mistral-7b-instruct-v0.2') {
+        return 'mistralai/mistral-7b-instruct-v0.2';
+    }
+
+    return null;
 };
 
 const isRateLimitError = (error: any): boolean => {
@@ -222,11 +230,12 @@ const setSecurityHeaders = (res: any) => {
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
 };
 
 /**
- * CORS: allow production Vercel domain + localhost dev, block unknown origins.
- * If ALLOWED_ORIGINS env is empty, allow all (useful for quick dev/preview deploys).
+ * CORS: explicit allowlist in production; dev fallback allows localhost and Vercel previews.
  */
 const setCorsHeaders = (req: any, res: any): boolean => {
     const requestOrigin = String(req.headers.origin || '');
@@ -238,13 +247,13 @@ const setCorsHeaders = (req: any, res: any): boolean => {
         return true;
     }
 
-    // If ALLOWED_ORIGINS is not configured, allow all origins (graceful dev mode)
-    const allowAll = ALLOWED_ORIGINS.length === 0;
-    // Also dynamically allow *.vercel.app preview URLs
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(requestOrigin);
     const isVercelPreview = /^https:\/\/[a-z0-9-]+-[a-z0-9]+-[a-z0-9]+\.vercel\.app$/.test(requestOrigin);
     const isExplicitlyAllowed = ALLOWED_ORIGINS.includes(requestOrigin);
+    const allowDevFallback = !IS_PRODUCTION && ALLOWED_ORIGINS.length === 0 && (isLocalhost || isVercelPreview);
+    const allowVercelPreview = process.env.VERCEL_ENV === 'preview' && isVercelPreview;
 
-    const isAllowed = allowAll || isVercelPreview || isExplicitlyAllowed;
+    const isAllowed = isExplicitlyAllowed || allowDevFallback || allowVercelPreview;
 
     if (isAllowed) {
         res.setHeader('Access-Control-Allow-Origin', requestOrigin);
@@ -491,10 +500,6 @@ export default async function handler(req: any, res: any) {
     const ip = getClientIp(req);
     const userAgent = getUserAgent(req);
 
-    // Declare costPattern for use in error logging later
-    let costPattern: ReturnType<typeof analyzeCostPattern> = { isAbnormal: false } as any;
-    let deviceAnomalies: ReturnType<typeof detectDeviceAnomalies> = { anomalyScore: 0 } as any;
-
     try {
         // Infra check
         if (keyPool.length === 0) {
@@ -534,7 +539,7 @@ export default async function handler(req: any, res: any) {
             tlsCipherSuite: undefined,
         });
 
-        deviceAnomalies = detectDeviceAnomalies({
+        const deviceAnomalies = detectDeviceAnomalies({
             userAgent,
             ip,
             acceptLanguage: String(req.headers['accept-language'] || ''),
@@ -596,9 +601,22 @@ export default async function handler(req: any, res: any) {
         }
 
         // Layer 4: Schema Validation
+        const normalizedModel = normalizeModelName(req.body?.model || '');
+        if (!normalizedModel) {
+            logSecurityEvent('chat_unsupported_model', {
+                requestId,
+                userId,
+                ip,
+                requested_model: String(req.body?.model || ''),
+            });
+            return res.status(400).json({
+                error: `Unsupported model '${String(req.body?.model || '')}'. Allowed models: ${ALLOWED_MODELS.join(', ')}`,
+            });
+        }
+
         const parsed = chatSchema.safeParse({
             ...req.body,
-            model: normalizeModelName(req.body?.model || ''),
+            model: normalizedModel,
         });
 
         if (!parsed.success) {
@@ -662,7 +680,24 @@ export default async function handler(req: any, res: any) {
         if (userRequests.length > 100) userRequests.shift();
         recentRequests.set(userId, userRequests);
 
-        costPattern = analyzeCostPattern(userRequests, 5, Math.min(100_000, DAILY_TOKEN_QUOTA / 5));
+        const oneHourAgo = Date.now() - 60 * 60 * 1000;
+        const hourlyTokens = userRequests
+            .filter(r => r.timestamp >= oneHourAgo)
+            .reduce((sum, r) => sum + r.estimatedTokens, 0);
+
+        if (hourlyTokens > HOURLY_TOKEN_QUOTA) {
+            logSecurityEvent('chat_hourly_quota_exceeded', {
+                requestId,
+                userId,
+                hourly_tokens: hourlyTokens,
+                hourly_quota: HOURLY_TOKEN_QUOTA,
+            });
+            return res.status(429).json({
+                error: 'You have reached your hourly AI usage limit. Please try again later.',
+            });
+        }
+
+        const costPattern = analyzeCostPattern(userRequests, 5, Math.min(100_000, DAILY_TOKEN_QUOTA / 5));
 
         if (costPattern.isAbnormal) {
             logSecurityEvent('chat_cost_exhaustion_pattern', { requestId, userId, ip });

@@ -5,6 +5,7 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
     .split(',')
     .map(origin => origin.trim())
     .filter(Boolean);
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 const ipRateWindow = new Map<string, { count: number; resetAt: number }>();
 const MAX_NEWS_REQ_PER_5_MIN_IP = Number(process.env.NEWS_RL_IP_5M || 50);
@@ -43,8 +44,12 @@ const checkSlidingWindow = (
 
 const setCorsHeaders = (req: any, res: any) => {
     const requestOrigin = String(req.headers.origin || '');
-    const allowAll = ALLOWED_ORIGINS.length === 0;
-    const isAllowed = allowAll || ALLOWED_ORIGINS.includes(requestOrigin);
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(requestOrigin);
+    const isVercelPreview = /^https:\/\/[a-z0-9-]+-[a-z0-9]+-[a-z0-9]+\.vercel\.app$/.test(requestOrigin);
+    const isExplicitlyAllowed = ALLOWED_ORIGINS.includes(requestOrigin);
+    const allowDevFallback = !IS_PRODUCTION && ALLOWED_ORIGINS.length === 0 && (isLocalhost || isVercelPreview);
+    const allowVercelPreview = process.env.VERCEL_ENV === 'preview' && isVercelPreview;
+    const isAllowed = isExplicitlyAllowed || allowDevFallback || allowVercelPreview;
 
     if (isAllowed && requestOrigin) {
         res.setHeader('Access-Control-Allow-Origin', requestOrigin);
@@ -61,6 +66,10 @@ export default async function handler(req: any, res: any) {
     const corsAllowed = setCorsHeaders(req, res);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
 
     if (!corsAllowed && req.headers.origin) {
         return res.status(403).json({ error: 'Origin not allowed' });

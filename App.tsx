@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
-import { UserProfile, Suggestion, RoadmapData, ChatMessage, Project, RealWorldScenario, ProjectDetails, SetupStep, TimelineEvent, CareerDetails, MockInterview, QuizQuestion, Flashcard, ConceptConnection, Debate, CareerRecommendation, Toughness, OfflineCenter, Career, AcademicSuggestion, ResumeAnalysis, AssessmentResult } from './types';
+import { UserProfile, Suggestion, RoadmapData, ChatMessage, Project, RealWorldScenario, ProjectDetails, SetupStep, TimelineEvent, CareerDetails, MockInterview, QuizQuestion, Flashcard, ConceptConnection, Debate, CareerRecommendation, Toughness, OfflineCenter, Career, AcademicSuggestion, ResumeAnalysis, AssessmentResult, RoadmapGenerationOptions } from './types';
 import * as GeminiService from './services/geminiService';
 import { supabase, getCurrentProfile, getPublicRoadmap, updateRoadmapWeek, updateRoadmapProgress, saveProfileFromOnboarding } from './services/supabaseService';
 import BackgroundAnimation from './components/BackgroundAnimation';
@@ -74,6 +74,8 @@ const translations = {
 type AnimationType = 'net' | 'globe';
 type Theme = 'light' | 'dark';
 
+const isValidTheme = (value: string | null): value is Theme => value === 'light' || value === 'dark';
+
 const App: React.FC = () => {
     const navigate = useNavigate();
     const location = useLocation();
@@ -132,6 +134,8 @@ const App: React.FC = () => {
     const [authResolved, setAuthResolved] = useState(false);
     const [isSubmittingForm, setIsSubmittingForm] = useState(false);
     const roadmapPollRef = useRef<number | null>(null);
+    const roadmapRequestModeRef = useRef<'foreground' | 'background'>('foreground');
+    const backgroundRoadmapErrorHandlerRef = useRef<((message: string) => void) | null>(null);
 
     const stopRoadmapPolling = () => {
         if (roadmapPollRef.current) {
@@ -145,6 +149,8 @@ const App: React.FC = () => {
         if (job.status === 'completed') {
             const result = toRoadmapResult(job);
             if (result) {
+                roadmapRequestModeRef.current = 'foreground';
+                backgroundRoadmapErrorHandlerRef.current = null;
                 setRoadmapData(result);
                 setSelectedSkill(result.skill || selectedSkill);
                 clearWorkflowState();
@@ -156,10 +162,19 @@ const App: React.FC = () => {
         }
 
         if (job.status === 'failed') {
-            setErrorMessage(job.error || 'Roadmap generation failed.');
+            const failureMessage = job.error || 'Roadmap generation failed.';
+            setErrorMessage(failureMessage);
             clearWorkflowState();
             stopRoadmapPolling();
             setActiveRoadmapJobId(null);
+
+            if (roadmapRequestModeRef.current === 'background') {
+                roadmapRequestModeRef.current = 'foreground';
+                backgroundRoadmapErrorHandlerRef.current?.(failureMessage);
+                backgroundRoadmapErrorHandlerRef.current = null;
+                return;
+            }
+
             navigate('/error');
         }
     };
@@ -180,11 +195,19 @@ const App: React.FC = () => {
         // Dismiss intro overlay after 2.5s
         const timer = setTimeout(() => setIsIntroVisible(false), 2500);
         
-        const savedTheme = localStorage.getItem('horizon-theme') as Theme;
-        if (savedTheme) {
+        let savedTheme: string | null = null;
+        try {
+            savedTheme = localStorage.getItem('horizon-theme');
+        } catch {
+            // Ignore storage-read failures in restricted browser contexts.
+        }
+
+        if (isValidTheme(savedTheme)) {
             setTheme(savedTheme);
-            if (savedTheme === 'dark') document.documentElement.classList.add('dark');
-        } 
+            if (savedTheme === 'dark') {
+                document.documentElement.classList.add('dark');
+            }
+        }
 
         return () => clearTimeout(timer);
     }, []);
@@ -243,13 +266,16 @@ const App: React.FC = () => {
     }, []);
 
     useEffect(() => {
+        let isCancelled = false;
+
         const tryResume = async () => {
-            if (!userProfile?.id) return;
+            if (!userProfile?.id || isCancelled) return;
 
             const persisted = getPersistedWorkflowState();
             const localJobId = persisted.jobId;
 
             if (localJobId) {
+                if (isCancelled) return;
                 setActiveRoadmapJobId(localJobId);
                 navigate('/loading');
                 startRoadmapPolling(localJobId);
@@ -263,7 +289,7 @@ const App: React.FC = () => {
 
             try {
                 const active = await getActiveRoadmapJob();
-                if (active) {
+                if (active && !isCancelled) {
                     setActiveRoadmapJobId(active.id);
                     navigate('/loading');
                     startRoadmapPolling(active.id);
@@ -274,12 +300,19 @@ const App: React.FC = () => {
         };
 
         tryResume();
-    }, [userProfile?.id]);
+        return () => {
+            isCancelled = true;
+        };
+    }, [userProfile?.id, navigate]);
 
     const toggleTheme = () => {
         const newTheme = theme === 'light' ? 'dark' : 'light';
         setTheme(newTheme);
-        localStorage.setItem('horizon-theme', newTheme);
+        try {
+            localStorage.setItem('horizon-theme', newTheme);
+        } catch {
+            // Ignore storage-write failures in restricted browser contexts.
+        }
         if (newTheme === 'dark') {
             document.documentElement.classList.add('dark');
         } else {
@@ -411,11 +444,21 @@ const App: React.FC = () => {
 
     const handleSelectSkill = (skill: string) => {
         setSelectedSkill(skill);
+        void GeminiService.getRapidAssessment(skill, userProfile.interests || 'General').catch(() => {
+            // Prefetch best-effort only; Configure page handles user-facing errors.
+        });
         navigate('/configure');
     };
 
-    const handleGenerateRoadmap = async (weeks: string, level: string) => {
-        navigate('/loading');
+    const handleGenerateRoadmap = async (weeks: string, level: string, options?: RoadmapGenerationOptions) => {
+        const runInBackground = options?.background === true;
+        roadmapRequestModeRef.current = runInBackground ? 'background' : 'foreground';
+        backgroundRoadmapErrorHandlerRef.current = runInBackground ? (options?.onError || null) : null;
+
+        if (!runInBackground) {
+            navigate('/loading');
+        }
+
         setErrorMessage('');
         try {
             const job = await createRoadmapJob(selectedSkill, weeks, level, userProfile);
@@ -426,8 +469,14 @@ const App: React.FC = () => {
             });
             await resolveRoadmapJob(job.id);
         } catch (error: any) {
-            setErrorMessage(error.message);
-            navigate('/error');
+            const message = String(error?.message || 'Roadmap generation failed. Please try again.');
+            setErrorMessage(message);
+            options?.onError?.(message);
+            roadmapRequestModeRef.current = 'foreground';
+            backgroundRoadmapErrorHandlerRef.current = null;
+            if (!runInBackground) {
+                navigate('/error');
+            }
         }
     };
     
@@ -660,14 +709,18 @@ const App: React.FC = () => {
 
     // Shared Shared Roadmap Loader for /?roadmapId=...
     useEffect(() => {
+        let isCancelled = false;
+
         const loadSharedMap = async () => {
              const urlParams = new URLSearchParams(window.location.search);
              const roadmapId = urlParams.get('roadmapId');
 
             if (roadmapId) {
                 try {
+                    if (isCancelled) return;
                     navigate('/loading');
                     const sharedData = await getPublicRoadmap(roadmapId);
+                    if (isCancelled) return;
                     setRoadmapData(sharedData);
                     setSelectedSkill(sharedData.skill);
                     navigate('/roadmap');
@@ -675,6 +728,7 @@ const App: React.FC = () => {
                     // Cleanup URL to avoid reload loop or confusion, but keep context
                     // Ideally we'd move to /roadmap/shared/:id but adhering to simpler current structure
                 } catch (e) {
+                    if (isCancelled) return;
                     console.error("Failed to load shared roadmap", e);
                     setErrorMessage("The shared roadmap could not be found or is private.");
                     navigate('/error');
@@ -682,7 +736,10 @@ const App: React.FC = () => {
             }
         };
         loadSharedMap();
-    }, []);
+        return () => {
+            isCancelled = true;
+        };
+    }, [navigate]);
 
     const isDashboardRoute = location.pathname === '/dashboard';
     const showDashboardButton = !!userProfile.id && !isDashboardRoute;

@@ -608,31 +608,95 @@ export const getPastRoadmaps = async (limit = 5): Promise<RoadmapData[]> => {
 };
 
 export const saveQuizResult = async (result: QuizResult) => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    // Import validation function
+    const { logAssessmentError } = await import('./assessmentService');
 
-    const { error } = await supabase
+    try {
+      // Validate input
+      if (!result) {
+        throw new Error('Quiz result object is required');
+      }
+
+      if (!result.skill || typeof result.skill !== 'string' || result.skill.trim().length === 0) {
+        throw new Error('Skill name is required and must be non-empty');
+      }
+
+      if (result.score < 0 || !Number.isInteger(result.score)) {
+        throw new Error(`Invalid score: must be non-negative integer, got ${result.score}`);
+      }
+
+      if (result.totalQuestions <= 0 || !Number.isInteger(result.totalQuestions)) {
+        throw new Error(
+          `Invalid total questions: must be positive integer, got ${result.totalQuestions}`,
+        );
+      }
+
+      if (result.score > result.totalQuestions) {
+        throw new Error(
+          `Score (${result.score}) cannot exceed total questions (${result.totalQuestions})`,
+        );
+      }
+
+      if (result.pointsEarned !== undefined && result.pointsEarned < 0) {
+        throw new Error(`Points earned cannot be negative, got ${result.pointsEarned}`);
+      }
+
+      // Validate pointsEarned bounds (cap at 500 per session)
+      const normalizedPointsEarned = Math.min(result.pointsEarned || 0, 500);
+
+      // Get authenticated user
+      const { data: { user } } = await supabase.auth.getUser();
+
+      if (!user) {
+        throw new Error('User not authenticated. Cannot save quiz result.');
+      }
+
+      // Insert quiz result
+      const { error: insertError, data: insertedData } = await supabase
         .from('quiz_results')
         .insert({
-            user_id: user.id,
-            roadmap_id: result.roadmapId,
-            skill_name: result.skill,
-            week_theme: result.weekTheme,
-            score: result.score,
-            total_questions: result.totalQuestions,
-            points_earned: result.pointsEarned,
-            assessment_type: result.assessmentType || 'standard',
-            created_at: new Date().toISOString()
+          user_id: user.id,
+          roadmap_id: result.roadmapId || null,
+          skill_name: result.skill.trim(),
+          week_theme: result.weekTheme || null,
+          score: result.score,
+          total_questions: result.totalQuestions,
+          points_earned: normalizedPointsEarned,
+          assessment_type: result.assessmentType || 'standard',
+          created_at: result.timestamp || new Date().toISOString(),
         });
-    
-    if (result.pointsEarned && result.pointsEarned > 0) {
-        await updateUserPoints(result.pointsEarned);
-    }
 
-    if (error) {
-        console.warn("Error saving quiz result:", error);
+      if (insertError) {
+        throw new Error(
+          `Failed to save quiz result: ${insertError.message || 'Unknown database error'}`,
+        );
+      }
+
+      // Only award points if DB insert was successful
+      if (normalizedPointsEarned > 0) {
+        try {
+          await updateUserPoints(normalizedPointsEarned);
+        } catch (pointsError) {
+          logAssessmentError('saveQuizResult:updateUserPoints', pointsError, {
+            userId: user.id,
+            pointsEarned: normalizedPointsEarned,
+          });
+          // Don't block on points update failure - quiz result was already saved
+        }
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'An unexpected error occurred while saving quiz result';
+
+      logAssessmentError('saveQuizResult', error, {
+        result,
+      });
+
+      throw new Error(`Could not save quiz result: ${message}`);
     }
-};
+  };
 
 export const signOut = async () => {
     await supabase.auth.signOut();

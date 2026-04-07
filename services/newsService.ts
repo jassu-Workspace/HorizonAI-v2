@@ -13,7 +13,11 @@ export const getEducationNews = async (topic: string): Promise<NewsArticle[]> =>
             return [];
         }
 
-        const data = await response.json();
+        const data = await response.json().catch(() => null);
+        if (!data || typeof data !== 'object') {
+            return [];
+        }
+
         const results = Array.isArray(data?.results) ? data.results : [];
         return results as NewsArticle[];
     } catch {

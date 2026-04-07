@@ -6,9 +6,10 @@
 import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
-const NVIDIA_BASE_URL = process.env.NVIDIA_API_BASE || process.env.VITE_NVIDIA_API_BASE || 'https://integrate.api.nvidia.com/v1';
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
+const NVIDIA_BASE_URL = process.env.NVIDIA_API_BASE || 'https://integrate.api.nvidia.com/v1';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 const FALLBACK_MODELS = ['meta/llama-3.1-405b-instruct', 'mistralai/mistral-7b-instruct-v0.2'] as const;
 
@@ -74,10 +75,12 @@ const setCorsHeaders = (req: any, res: any): boolean => {
         return true;
     }
 
-    const allowAll = ALLOWED_ORIGINS.length === 0;
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(requestOrigin);
     const isVercelPreview = /^https:\/\/[a-z0-9-]+-[a-z0-9]+-[a-z0-9]+\.vercel\.app$/.test(requestOrigin);
     const isExplicitlyAllowed = ALLOWED_ORIGINS.includes(requestOrigin);
-    const isAllowed = allowAll || isVercelPreview || isExplicitlyAllowed;
+    const allowDevFallback = !IS_PRODUCTION && ALLOWED_ORIGINS.length === 0 && (isLocalhost || isVercelPreview);
+    const allowVercelPreview = process.env.VERCEL_ENV === 'preview' && isVercelPreview;
+    const isAllowed = isExplicitlyAllowed || allowDevFallback || allowVercelPreview;
 
     if (isAllowed) {
         res.setHeader('Access-Control-Allow-Origin', requestOrigin);
@@ -96,7 +99,7 @@ const pickApiKeys = (): string[] => {
         String(process.env.NVIDIA_API_KEY_2 || '').trim(),
         String(process.env.NVIDIA_API_KEY_1 || '').trim(),
         String(process.env.NVIDIA_API_KEY_3 || '').trim(),
-        String(process.env.NVIDIA_API_KEY || process.env.VITE_NVIDIA_API_KEY || '').trim(),
+        String(process.env.NVIDIA_API_KEY || '').trim(),
     ].filter(Boolean);
 };
 
@@ -126,7 +129,12 @@ const isTransientProviderError = (error: any): boolean => {
 const parseJsonResponse = <T,>(text: string): T => {
     const trimmed = text.trim();
     const jsonText = trimmed.replace(/^```json\s*|```\s*$/g, '').replace(/^```\s*|```\s*$/g, '');
-    return JSON.parse(jsonText) as T;
+
+    try {
+        return JSON.parse(jsonText) as T;
+    } catch {
+        throw new Error('AI returned invalid JSON. Please try again.');
+    }
 };
 
 const extractFirstJsonObject = (text: string): string => {

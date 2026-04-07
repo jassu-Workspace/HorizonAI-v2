@@ -15,6 +15,10 @@ let redisClient: RedisClient | null = null;
 let isInitialized = false;
 let redisAvailable = false;
 
+const ABUSE_SCORE_THROTTLE_THRESHOLD = Number(process.env.AI_ABUSE_SCORE_THROTTLE || 50);
+const ABUSE_SCORE_BLOCK_THRESHOLD = Number(process.env.AI_ABUSE_SCORE_BLOCK || 70);
+const ABUSE_SCORE_BAN_THRESHOLD = Number(process.env.AI_ABUSE_SCORE_BAN || 90);
+
 // ─── In-Memory Fallback ──────────────────────────────────────────────────────
 // Stores timestamps of recent requests per key (sliding window)
 const inMemoryWindows = new Map<string, number[]>();
@@ -31,23 +35,27 @@ const inMemoryRateLimit = (
     if (timestamps.length < limit) {
         timestamps.push(now);
         inMemoryWindows.set(key, timestamps);
+        const oldest = timestamps[0] || now;
         return {
             allowed: true,
             remaining: limit - timestamps.length,
-            resetAt: now + windowMs,
+            resetAt: oldest + windowMs,
         };
     }
+
+    const oldest = timestamps[0] || now;
+    const retryAfter = Math.max(0, oldest + windowMs - now);
 
     return {
         allowed: false,
         remaining: 0,
-        resetAt: now + windowMs,
-        retryAfter: windowMs,
+        resetAt: oldest + windowMs,
+        retryAfter,
     };
 };
 
 // Prune old in-memory entries every 5 minutes to prevent memory leaks
-setInterval(() => {
+const pruneTimer = setInterval(() => {
     const cutoff = Date.now() - 10 * 60 * 1000; // 10 min ago
     for (const [key, timestamps] of inMemoryWindows.entries()) {
         const fresh = timestamps.filter(t => t > cutoff);
@@ -58,6 +66,11 @@ setInterval(() => {
         }
     }
 }, 5 * 60 * 1000);
+
+// Avoid pinning Node's event loop in serverless execution environments.
+if (typeof (pruneTimer as any).unref === 'function') {
+    (pruneTimer as any).unref();
+}
 
 // ─── In-Memory Abuse Scores ──────────────────────────────────────────────────
 const inMemoryAbuseScores = new Map<string, { score: number; date: string }>();
@@ -332,13 +345,13 @@ const buildAbuseResult = (numScore: number): AbuseScoreCheckResult => {
     let action: 'allow' | 'throttle' | 'block' | 'ban' = 'allow';
     let message: string | undefined;
 
-    if (numScore >= 90) {
+    if (numScore >= ABUSE_SCORE_BAN_THRESHOLD) {
         action = 'ban';
         message = 'Your account has been flagged for abuse. Contact support.';
-    } else if (numScore >= 70) {
+    } else if (numScore >= ABUSE_SCORE_BLOCK_THRESHOLD) {
         action = 'block';
         message = 'Rate-limited due to suspicious activity.';
-    } else if (numScore >= 50) {
+    } else if (numScore >= ABUSE_SCORE_THROTTLE_THRESHOLD) {
         action = 'throttle';
         message = 'Request throttled due to abuse detection.';
     }

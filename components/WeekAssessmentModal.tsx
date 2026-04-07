@@ -1,6 +1,46 @@
 import React, { useState } from 'react';
 import { QuizQuestion, AssessmentResult } from '../types';
 import { saveQuizResult } from '../services/supabaseService';
+import { logAssessmentError, getPercentageFromScore } from '../services/assessmentService';
+
+// Pass threshold: 50% of total questions
+const PASS_THRESHOLD_PERCENTAGE = 50;
+
+const calculatePassScore = (totalQuestions: number): number => {
+  if (totalQuestions <= 0) {
+    throw new Error('Invalid total questions count');
+  }
+  return Math.ceil((PASS_THRESHOLD_PERCENTAGE / 100) * totalQuestions);
+};
+
+const calculatePoints = (score: number, totalQuestions: number, isPassed: boolean): number => {
+  if (!isPassed || score < 0 || score > totalQuestions) {
+    return 0;
+  }
+
+  // Validate inputs
+  try {
+    if (totalQuestions <= 0) {
+      throw new Error('Invalid total questions');
+    }
+    if (score > totalQuestions) {
+      throw new Error('Score cannot exceed total questions');
+    }
+
+    // Points = 10 XP per correct answer
+    let earned = score * 10;
+
+    // Bonus: 50 XP for perfect score
+    if (score === totalQuestions) {
+      earned += 50;
+    }
+
+    return Math.max(0, Math.min(earned, 500)); // Cap at 500 XP
+  } catch (error) {
+    logAssessmentError('calculatePoints', error, { score, totalQuestions });
+    return 0;
+  }
+};
 
 interface WeekAssessmentModalProps {
     questions: QuizQuestion[];
@@ -46,30 +86,36 @@ const WeekAssessmentModal: React.FC<WeekAssessmentModalProps> = ({
 
     const handleSubmit = async () => {
         setSubmitted(true);
-        // Calculate Score
-        const calculatedScore = selectedAnswers.reduce((acc, answer, index) => {
-            return answer === questions[index].correctAnswer ? acc + 1 : acc;
-        }, 0);
-        setScore(calculatedScore);
 
-        // Pass threshold > 50%
-        // For 15 questions, > 7.5 means 8 or more.
-        const passed = calculatedScore >= 8;
-        let earned = 0;
-
-        if (passed && roadmapStatus === 'active') {
-            // 10 XP per correct answer
-            earned = calculatedScore * 10;
-            // Bonus for perfect score
-            if (calculatedScore === questions.length) {
-                earned += 50; 
+        try {
+          // Calculate score with validation
+          const calculatedScore = selectedAnswers.reduce((acc, answer, index) => {
+            if (!answer || !questions[index]) {
+              return acc;
             }
-        }
-        setPointsEarned(earned);
+            return answer === questions[index].correctAnswer ? acc + 1 : acc;
+          }, 0);
 
-        // Save result to DB regardless of pass/fail
-        if (roadmapId) {
-            await saveQuizResult({
+          if (calculatedScore < 0 || calculatedScore > questions.length) {
+            throw new Error(
+              `Invalid score calculation: score=${calculatedScore}, total=${questions.length}`,
+            );
+          }
+
+          setScore(calculatedScore);
+
+          // Calculate pass status with dynamic threshold
+          const passThreshold = calculatePassScore(questions.length);
+          const passed = calculatedScore >= passThreshold;
+
+          // Calculate points
+          const earned = calculatePoints(calculatedScore, questions.length, passed && roadmapStatus === 'active');
+          setPointsEarned(earned);
+
+          // Save result to DB regardless of pass/fail
+          if (roadmapId) {
+            try {
+              await saveQuizResult({
                 skill,
                 weekTheme: theme,
                 score: calculatedScore,
@@ -77,8 +123,23 @@ const WeekAssessmentModal: React.FC<WeekAssessmentModalProps> = ({
                 timestamp: new Date().toISOString(),
                 roadmapId,
                 pointsEarned: earned,
-                assessmentType: 'assignment'
-            });
+                assessmentType: 'assignment',
+              });
+            } catch (error) {
+              logAssessmentError('WeekAssessmentModal:saveQuizResult', error, {
+                skill,
+                theme,
+                score: calculatedScore,
+                totalQuestions: questions.length,
+              });
+              // Don't block user - error is logged
+            }
+          }
+        } catch (error) {
+          logAssessmentError('WeekAssessmentModal:handleSubmit', error, {
+            questionCount: questions.length,
+          });
+          setSubmitted(false);
         }
     };
 
@@ -86,14 +147,15 @@ const WeekAssessmentModal: React.FC<WeekAssessmentModalProps> = ({
     const isAnswerSelected = !!selectedAnswers[currentQuestionIndex];
 
     if (submitted) {
-        const passed = score >= 8;
+        const passThreshold = calculatePassScore(questions.length);
+        const passed = score >= passThreshold;
         return (
             <div className="text-center space-y-6 animate-fadeIn">
                 <div className={`p-6 rounded-2xl border-4 ${passed ? 'bg-green-50 border-green-400' : 'bg-red-50 border-red-400'}`}>
                     <ion-icon name={passed ? "trophy" : "alert-circle"} className={`text-6xl mb-4 ${passed ? 'text-green-500' : 'text-red-500'}`}></ion-icon>
                     <h2 className="text-3xl font-bold text-slate-800 mb-2">{passed ? 'Assignment Passed!' : 'Assessment Failed'}</h2>
                     <p className="text-lg text-slate-600">You scored <span className="font-bold">{score}</span> / {questions.length}</p>
-                    
+
                     {passed ? (
                         <div className="mt-4">
                             <p className="text-slate-600">Great job! You have mastered this week's content.</p>
@@ -104,7 +166,7 @@ const WeekAssessmentModal: React.FC<WeekAssessmentModalProps> = ({
                             )}
                         </div>
                     ) : (
-                        <p className="mt-4 text-slate-600">You need at least 8 correct answers to proceed. Please review the materials and try again.</p>
+                        <p className="mt-4 text-slate-600">You need at least {passThreshold} correct answers to proceed ({PASS_THRESHOLD_PERCENTAGE}%). Please review the materials and try again.</p>
                     )}
                 </div>
 

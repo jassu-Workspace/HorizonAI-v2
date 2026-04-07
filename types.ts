@@ -135,6 +135,11 @@ export interface AssessmentResult {
     pointsAwarded: number;
 }
 
+export interface RoadmapGenerationOptions {
+    background?: boolean;
+    onError?: (message: string) => void;
+}
+
 export interface Project {
     title: string;
     description: string;

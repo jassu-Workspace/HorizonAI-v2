@@ -20,6 +20,30 @@ export type WorkflowJob<TPayload = Record<string, unknown>, TResult = Record<str
 const ACTIVE_JOB_ID_KEY = 'horizon.activeRoadmapJobId';
 const ACTIVE_STEP_KEY = 'horizon.workflowStep';
 
+const safeStorageGet = (key: string): string | null => {
+    try {
+        return localStorage.getItem(key);
+    } catch {
+        return null;
+    }
+};
+
+const safeStorageSet = (key: string, value: string) => {
+    try {
+        localStorage.setItem(key, value);
+    } catch {
+        // Ignore storage-write failures in restricted browser contexts.
+    }
+};
+
+const safeStorageRemove = (key: string) => {
+    try {
+        localStorage.removeItem(key);
+    } catch {
+        // Ignore storage-remove failures in restricted browser contexts.
+    }
+};
+
 const getApiBase = (): string => {
     return '/api';
 };
@@ -79,19 +103,19 @@ const parseJson = async <T>(response: Response): Promise<T> => {
 };
 
 export const persistWorkflowState = (jobId: string, step: string) => {
-    localStorage.setItem(ACTIVE_JOB_ID_KEY, jobId);
-    localStorage.setItem(ACTIVE_STEP_KEY, step);
+    safeStorageSet(ACTIVE_JOB_ID_KEY, jobId);
+    safeStorageSet(ACTIVE_STEP_KEY, step);
 };
 
 export const clearWorkflowState = () => {
-    localStorage.removeItem(ACTIVE_JOB_ID_KEY);
-    localStorage.removeItem(ACTIVE_STEP_KEY);
+    safeStorageRemove(ACTIVE_JOB_ID_KEY);
+    safeStorageRemove(ACTIVE_STEP_KEY);
 };
 
 export const getPersistedWorkflowState = (): { jobId: string | null; step: string | null } => {
     return {
-        jobId: localStorage.getItem(ACTIVE_JOB_ID_KEY),
-        step: localStorage.getItem(ACTIVE_STEP_KEY),
+        jobId: safeStorageGet(ACTIVE_JOB_ID_KEY),
+        step: safeStorageGet(ACTIVE_STEP_KEY),
     };
 };
 

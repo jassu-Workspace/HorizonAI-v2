@@ -2,6 +2,11 @@ import React, { useState } from 'react';
 import { QuizQuestion } from '../types';
 import { Loader } from './Loader';
 import { saveQuizResult } from '../services/supabaseService';
+import {
+  getLevelFromPercentage,
+  getPercentageFromScore,
+  logAssessmentError,
+} from '../services/assessmentService';
 
 interface SkillLevelQuizModalProps {
     questions: QuizQuestion[];
@@ -25,28 +30,48 @@ const SkillLevelQuizModal: React.FC<SkillLevelQuizModalProps> = ({ questions, on
     const handleSubmit = async () => {
         setSubmitted(true);
         const score = getScore();
-        
-        // Save assessment result
-        await saveQuizResult({
-             skill: skillName,
-             weekTheme: 'Skill Assessment',
-             score,
-             totalQuestions: questions.length,
-             timestamp: new Date().toISOString()
-         });
+
+        try {
+          // Save assessment result with validation
+          await saveQuizResult({
+            skill: skillName,
+            weekTheme: 'Skill Level Assessment',
+            score,
+            totalQuestions: questions.length,
+            timestamp: new Date().toISOString(),
+          });
+        } catch (error) {
+          logAssessmentError('SkillLevelQuizModal:saveQuizResult', error, {
+            skillName,
+            score,
+            totalQuestions: questions.length,
+          });
+          // Don't block user - error is logged
+        }
     };
-    
-    const getScore = () => {
+
+    const getScore = (): number => {
         return selectedAnswers.reduce((score, answer, index) => {
             return answer === questions[index].correctAnswer ? score + 1 : score;
         }, 0);
     };
-    
+
     const getLevelFromScore = (score: number, total: number): 'Beginner' | 'Intermediate' | 'Expert' => {
-        const percentage = (score / total) * 100;
-        if (percentage <= 33) return 'Beginner';
-        if (percentage <= 67) return 'Intermediate';
-        return 'Expert';
+        try {
+          if (total <= 0 || score < 0 || score > total) {
+            throw new Error(`Invalid score values: score=${score}, total=${total}`);
+          }
+
+          const percentage = getPercentageFromScore(score, total);
+          return getLevelFromPercentage(percentage);
+        } catch (error) {
+          logAssessmentError('SkillLevelQuizModal:getLevelFromScore', error, {
+            score,
+            total,
+          });
+          // Default to Beginner on error
+          return 'Beginner';
+        }
     };
 
     const handleFinish = () => {

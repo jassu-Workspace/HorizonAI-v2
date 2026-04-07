@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import './types';
+import './index.css';
 
 // Simple Error Boundary to catch crashes in production-like environments
 class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean, error: Error | null}> {
@@ -17,13 +18,16 @@ class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasErr
 
   render() {
     if (this.state.hasError) {
+      const isDev = import.meta.env.DEV;
       return (
-        <div style={{padding: 20, textAlign: 'center', fontFamily: 'sans-serif', color: '#333'}}>
+        <div className="error-boundary-wrap">
             <h1>Something went wrong.</h1>
             <p>Please refresh the page.</p>
-            <pre style={{color: 'red', background: '#f0f0f0', padding: 10, borderRadius: 5, overflow: 'auto'}}>
-                {this.state.error?.toString()}
-            </pre>
+            {isDev ? (
+              <pre className="error-boundary-details">
+                  {this.state.error?.toString()}
+              </pre>
+            ) : null}
         </div>
       );
     }

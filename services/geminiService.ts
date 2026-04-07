@@ -45,6 +45,10 @@ const buildProdApiCandidates = (): string[] => {
 const API_BASE_CANDIDATES = isDev ? buildDevApiCandidates() : buildProdApiCandidates();
 
 type ApiRequestError = Error & { status?: number; code?: string; rawMessage?: string };
+type CallApiOptions = {
+  timeoutMs?: number;
+  maxTokens?: number;
+};
 
 /**
  * Make API calls through local proxy server with robust retry logic
@@ -54,6 +58,7 @@ const callNvidiaAPI = async (
     model: string = 'meta/llama-3.1-405b-instruct',
     temperature: number = 0.3,
   topP: number = 0.7,
+  options?: CallApiOptions,
 ): Promise<string> => {   
   if (prompt.length > 12000) {
     throw new Error('Prompt is too large. Please reduce input size.');
@@ -67,7 +72,10 @@ const callNvidiaAPI = async (
 
     const requestToBase = async (apiBase: string): Promise<string> => {
       const controller = new AbortController();
-      const requestDeadlineMs = 25000; // Increased from 12s to allow NVIDIA API time to process
+      const requestedTimeout = Number(options?.timeoutMs || 30000);
+      const requestDeadlineMs = Math.max(10000, Math.min(requestedTimeout, 60000));
+      const requestedMaxTokens = Number(options?.maxTokens || 1024);
+      const maxTokens = Math.max(64, Math.min(requestedMaxTokens, 4096));
       const timeoutId = window.setTimeout(() => controller.abort(), requestDeadlineMs);
       let response: Response;
       try {
@@ -83,7 +91,7 @@ const callNvidiaAPI = async (
             messages: [{ role: 'user', content: prompt }],
             temperature,
             top_p: topP,
-            max_tokens: 4096,
+            max_tokens: maxTokens,
           }),
         });
       } catch (fetchErr: any) {
@@ -171,7 +179,7 @@ const callNvidiaAPI = async (
         const modelNotFound = aggregateErrors.find((e: any) => e?.code === 'MODEL_NOT_FOUND');
         if (model === 'z-ai/glm4.7' && modelNotFound) {
           console.warn('[AI] GLM model not found - falling back to Llama');
-          return callNvidiaAPI(prompt, 'meta/llama-3.1-405b-instruct', temperature, topP);
+          return callNvidiaAPI(prompt, 'meta/llama-3.1-405b-instruct', temperature, topP, options);
         }
 
             if (errorMsg.includes('429') || errorMsg.includes('overloaded') || errorMsg.toLowerCase().includes('too many requests')) {
@@ -252,6 +260,61 @@ const parseJsonResponse = <T,>(text: string): T => {
         console.error("[JSON Parse] Error:", e.message);
         throw new Error(`Invalid API response format: ${e.message}`);
     }
+};
+
+// Import from unified assessment service
+import {
+  ASSESSMENT_CONFIG,
+  SELF_RATING_SENTINEL,
+  buildCacheKey,
+  validateAssessmentResponse,
+  logAssessmentError,
+  cloneQuestions,
+} from './assessmentService';
+
+type RapidAssessmentCacheEntry = {
+  expiresAt: number;
+  promise: Promise<RapidQuestion[]>;
+};
+
+const rapidAssessmentCache = new Map<string, RapidAssessmentCacheEntry>();
+
+const getCachedRapidAssessment = (key: string): Promise<RapidQuestion[]> | null => {
+  const cached = rapidAssessmentCache.get(key);
+  if (!cached) {
+    return null;
+  }
+
+  if (cached.expiresAt < Date.now()) {
+    rapidAssessmentCache.delete(key);
+    return null;
+  }
+
+  return cached.promise;
+};
+
+const setCachedRapidAssessment = (key: string, promise: Promise<RapidQuestion[]>) => {
+  rapidAssessmentCache.set(key, {
+    expiresAt: Date.now() + ASSESSMENT_CONFIG.CACHE.TTL_MS,
+    promise,
+  });
+
+  promise.catch(() => {
+    const latest = rapidAssessmentCache.get(key);
+    if (latest?.promise === promise) {
+      rapidAssessmentCache.delete(key);
+    }
+  });
+};
+
+const isAuthRelatedError = (error: unknown): boolean => {
+  const message = String((error as any)?.message || '').toLowerCase();
+  return (
+    message.includes('sign in') ||
+    message.includes('expired') ||
+    message.includes('access denied') ||
+    message.includes('authentication required')
+  );
 };
 
 // Model configurations
@@ -335,28 +398,125 @@ export const getSkillSuggestions = async (profile: UserProfile): Promise<Suggest
     return data.suggestions;
 };
 
-export const getRapidAssessment = async (skillName: string, interestDomain: string): Promise<RapidQuestion[]> => {
-    const prompt = `${ADVISOR_PERSONA}
-    Generate a Rapid Placement Test for the skill "${skillName}" specialized for the domain "${interestDomain}".
-    
-    Requirements:
-    - Exactly 15 multiple-choice questions
-    - 5 Basic/Conceptual questions
-    - 5 Intermediate/Application-based questions
-    - 5 Advanced/Scenario-based questions
-    - Questions must be solvable within 20-30 seconds each
-    
-    Respond ONLY with valid JSON:
-    {
-      "quiz": [
-        {"question": "...", "options": ["...", "...", "...", "..."], "correctAnswer": "..."},
-        ...
-      ]
-    }`;
+/**
+ * Generate a rapid assessment quiz for a skill
+ * Uses strict validation and unified scoring logic
+ */
+export const getRapidAssessment = async (
+  skillName: string,
+  interestDomain: string,
+): Promise<RapidQuestion[]> => {
+  // Validate inputs strictly
+  if (!skillName || typeof skillName !== 'string' || skillName.trim().length === 0) {
+    throw new Error('Skill name is required');
+  }
+  if (!interestDomain || typeof interestDomain !== 'string' || interestDomain.trim().length === 0) {
+    throw new Error('Interest domain is required');
+  }
 
-    const response = await callNvidiaAPI(prompt, MODEL_BY_TASK.QUIZ, 0.3);
-    return parseJsonResponse<{ quiz: RapidQuestion[] }>(response).quiz;
+  const normalizedSkill = skillName.trim();
+  const normalizedDomain = interestDomain.trim();
+
+  // Check cache with unified key
+  const cacheKey = buildCacheKey(normalizedSkill, normalizedDomain);
+  const cached = getCachedRapidAssessment(cacheKey);
+  if (cached) {
+    const cachedResult = await cached;
+    return cloneQuestions(cachedResult);
+  }
+
+  // Generate assessment quiz with unified prompt
+  const generationPromise = (async (): Promise<RapidQuestion[]> => {
+    const prompt = buildPreciseAssessmentPrompt(
+      normalizedSkill,
+      normalizedDomain,
+      ASSESSMENT_CONFIG.RAPID_ASSESSMENT.TARGET_QUESTIONS,
+    );
+
+    try {
+      const response = await callNvidiaAPI(
+        prompt,
+        ASSESSMENT_CONFIG.RAPID_ASSESSMENT.MODEL,
+        ASSESSMENT_CONFIG.RAPID_ASSESSMENT.TEMPERATURE,
+        ASSESSMENT_CONFIG.RAPID_ASSESSMENT.TOP_P,
+        {
+          timeoutMs: ASSESSMENT_CONFIG.RAPID_ASSESSMENT.TIMEOUT_MS,
+          maxTokens: 1200,
+        },
+      );
+
+      const parsed = parseJsonResponse<unknown>(response);
+      const validation = validateAssessmentResponse(parsed);
+
+      if (!validation.isValid) {
+        logAssessmentError('getRapidAssessment:validation_failed', 'Response validation failed', {
+          skillName: normalizedSkill,
+          domain: normalizedDomain,
+          errorCount: validation.errors.length,
+          firstError: validation.errors[0],
+        });
+        throw new Error(
+          `Assessment validation failed: ${validation.errors[0]?.issue || 'Unknown validation error'}`,
+        );
+      }
+
+      // Extract validated questions
+      const dataObj = parsed as any;
+      const questionsArray = Array.isArray(dataObj?.quiz)
+        ? dataObj.quiz
+        : Array.isArray(dataObj?.questions)
+          ? dataObj.questions
+          : [];
+
+      const questions = questionsArray.slice(0, ASSESSMENT_CONFIG.RAPID_ASSESSMENT.TARGET_QUESTIONS);
+
+      if (questions.length < ASSESSMENT_CONFIG.RAPID_ASSESSMENT.MIN_QUESTIONS) {
+        throw new Error(
+          `Insufficient questions: expected ${ASSESSMENT_CONFIG.RAPID_ASSESSMENT.MIN_QUESTIONS}, got ${questions.length}`,
+        );
+      }
+
+      return questions;
+    } catch (error: unknown) {
+      if (isAuthRelatedError(error)) {
+        throw error;
+      }
+
+      logAssessmentError('getRapidAssessment:generation_failed', error, {
+        skillName: normalizedSkill,
+        domain: normalizedDomain,
+      });
+
+      throw error;
+    }
+  })();
+
+  setCachedRapidAssessment(cacheKey, generationPromise);
+  const generated = await generationPromise;
+  return cloneQuestions(generated);
 };
+
+/**
+ * Build precise assessment prompt for consistent quality
+ */
+const buildPreciseAssessmentPrompt = (
+  skill: string,
+  domain: string,
+  targetQuestions: number,
+): string => {
+  return `Generate exactly ${targetQuestions} diagnostic placement quiz questions for "${skill}" within context of "${domain}".
+
+CRITICAL CONSTRAINTS:
+- 3-4 beginner level questions, 3-4 intermediate level, 2-3 advanced level
+- Each question MUST be 8-15 words maximum
+- EXACTLY 4 unique non-redundant options per question
+- correctAnswer MUST be exactly one of the 4 options (copy exact string)
+- Options must NOT repeat across different questions
+- No duplicate questions
+- Focus on conceptual understanding, not trivia
+
+Response MUST be valid JSON only (no markdown, no extra text):
+{"quiz":[{"question":"What is X?","options":["Option A","Option B","Option C","Option D"],"correctAnswer":"Option C"},...]}`;
 
 export const getRoadmap = async (skillName: string, weeks: string, level: string, profile: UserProfile): Promise<RoadmapData> => {
     const userContext = generateComprehensiveUserContext(profile);

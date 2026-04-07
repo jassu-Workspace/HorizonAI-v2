@@ -1,6 +1,27 @@
 import crypto from 'crypto';
 
 const MAX_SKEW_MS = Number(process.env.INTERNAL_SIGNATURE_TTL_MS || 30_000);
+const NONCE_CACHE_TTL_MS = Math.max(MAX_SKEW_MS, 30_000);
+const usedNonces = new Map<string, number>();
+
+const cleanupUsedNonces = () => {
+    const now = Date.now();
+    for (const [nonce, expiresAt] of usedNonces.entries()) {
+        if (expiresAt <= now) {
+            usedNonces.delete(nonce);
+        }
+    }
+};
+
+const rememberNonce = (nonce: string): boolean => {
+    cleanupUsedNonces();
+    if (usedNonces.has(nonce)) {
+        return false;
+    }
+
+    usedNonces.set(nonce, Date.now() + NONCE_CACHE_TTL_MS);
+    return true;
+};
 
 const getSigningKeys = (): string[] => {
     return String(process.env.INTERNAL_SIGNING_KEYS || process.env.INTERNAL_SIGNING_KEY || '')
@@ -78,5 +99,11 @@ export const verifyInternalRequest = (req: any, expectedMethod: string, expected
         return false;
     }
 
-    return keys.some((key) => timingSafeEq(signature, sign(key, payload)));
+    const isValidSignature = keys.some((key) => timingSafeEq(signature, sign(key, payload)));
+    if (!isValidSignature) {
+        return false;
+    }
+
+    // Block replay attacks for the signature validity window.
+    return rememberNonce(nonce);
 };
