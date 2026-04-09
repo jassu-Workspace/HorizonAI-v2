@@ -9,7 +9,18 @@ const PASSWORD_RESET_PATH = '/auth/reset-password';
 const isBrowser = typeof window !== 'undefined';
 
 const appOrigin = (): string => {
-  return isBrowser ? window.location.origin : '';
+  if (!isBrowser) return '';
+
+  // Get the full origin including port
+  const origin = window.location.origin;
+
+  // For localhost with different ports, use the current one
+  if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+    return origin;
+  }
+
+  // For production, use the origin
+  return origin;
 };
 
 const absoluteUrl = (path: string): string => {
@@ -129,25 +140,50 @@ export const getAccessToken = async (): Promise<string | null> => {
 
 export const signInWithGoogle = async (): Promise<AuthResponse> => {
   try {
+    const redirectUrl = absoluteUrl(OAUTH_CALLBACK_PATH);
+    console.log('[Auth] Google OAuth redirect URL:', redirectUrl);
+
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: absoluteUrl(OAUTH_CALLBACK_PATH),
+        redirectTo: redirectUrl,
+        queryParams: {
+          access_type: 'offline',
+          prompt: 'consent',
+        },
       },
     });
 
     if (error) {
+      console.error('[Auth] Google sign-in error:', error);
+      const errorMsg = error.message || 'Google sign-in failed.';
+
+      // Provide helpful error messages
+      if (errorMsg.includes('popup')) {
+        return {
+          success: false,
+          error: 'Please allow popups for this site to sign in with Google.',
+        };
+      }
+      if (errorMsg.includes('redirect')) {
+        return {
+          success: false,
+          error: 'Please check that Google OAuth is configured in Supabase. Redirect URL: ' + redirectUrl,
+        };
+      }
+
       return {
         success: false,
-        error: toErrorMessage(error, 'Google sign-in failed.'),
+        error: errorMsg,
       };
     }
 
     return { success: true };
   } catch (error) {
+    console.error('[Auth] Google OAuth error:', error);
     return {
       success: false,
-      error: toErrorMessage(error, 'Google sign-in failed.'),
+      error: toErrorMessage(error, 'Google sign-in failed. Please try again.'),
     };
   }
 };
