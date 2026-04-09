@@ -1,7 +1,8 @@
 
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { UserProfile, LearningStyle, AcademicLevel, Stream, FocusArea } from '../types';
-import { saveProfileFromOnboarding, uploadResume } from '../services/supabaseService';
+import { saveProfileFromOnboarding, uploadResume, supabase } from '../services/supabaseService';
 
 interface OnboardingProps {
     onComplete: (profileData: Partial<UserProfile>) => void;
@@ -57,6 +58,7 @@ const ACADEMIC_DATA: any = {
 };
 
 const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
+    const navigate = useNavigate();
     const [step, setStep] = useState(1);
     const totalSteps = 4; // Reduced Steps (Removed Rapid Test)
 
@@ -155,6 +157,13 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+            alert('Please sign in before completing onboarding.');
+            navigate('/auth');
+            return;
+        }
         
         // Critical Fix: If we are not at the final step, move to next step instead of saving.
         if (step < totalSteps) {
@@ -190,6 +199,12 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
         } catch (err: any) {
             console.error("Failed to save profile or upload resume", err);
             const errorMessage = err?.message || "An error occurred. Please try again.";
+            if (String(errorMessage).toLowerCase().includes('not authenticated')) {
+                alert('Please sign in to save your profile.');
+                navigate('/auth');
+                return;
+            }
+
             alert(`Failed to save profile: ${errorMessage}`);
         } finally {
             setIsUploading(false);
@@ -235,7 +250,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
     return (
         <div className="glass-card p-6 md:p-10 max-w-3xl mx-auto mt-10 relative z-10">
-            <h2 className="text-3xl font-bold text-slate-900 mb-2 text-center" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>Setup Your Profile</h2>
+            <h2 className="roadmap-title-font text-3xl font-bold text-slate-900 mb-2 text-center">Setup Your Profile</h2>
             
             <ProgressBar />
             
@@ -245,7 +260,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                         <div className="animate-fadeIn">
                             <h3 className="font-semibold text-center text-xl text-slate-800 mb-6">First, what should we call you?</h3>
                             <label className="block text-sm font-medium text-slate-700 mb-2">Full Name</label>
-                            <input type="text" autoFocus required value={fullName} onChange={e => setFullName(e.target.value)} className="w-full px-4 py-3 bg-slate-100/80 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 transition text-slate-900"/>
+                            <input type="text" autoFocus required title="Full name" placeholder="Enter your full name" value={fullName} onChange={e => setFullName(e.target.value)} className="w-full px-4 py-3 bg-slate-100/80 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 transition text-slate-900"/>
                         </div>
                     )}
                     {step === 2 && (
@@ -255,7 +270,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                             <div>
                                 <label className="block text-sm font-medium text-slate-700 mb-3 text-center">Field of Study</label>
                                 <div className="relative max-w-xs mx-auto">
-                                    <select value={stream} onChange={(e) => setStream(e.target.value as Stream)} className="w-full p-3 border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 appearance-none text-center font-medium">
+                                    <select value={stream} onChange={(e) => setStream(e.target.value as Stream)} title="Field of study" aria-label="Field of study" className="w-full p-3 border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 appearance-none text-center font-medium">
                                         {availableStreams.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                                     </select>
                                     <div className="absolute inset-y-0 right-0 flex items-center px-4 pointer-events-none text-slate-500"><ion-icon name="chevron-down"></ion-icon></div>
@@ -266,7 +281,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                                 <div className="animate-fadeIn">
                                     <label className="block text-sm font-bold text-slate-800 mb-3 text-center uppercase tracking-wider">BRANCHES</label>
                                     <div className="relative max-w-sm mx-auto">
-                                        <select value={branch} onChange={(e) => setBranch(e.target.value)} className="w-full p-3 border-2 border-slate-300 rounded-lg bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none text-slate-900 appearance-none text-center font-bold">
+                                        <select value={branch} onChange={(e) => setBranch(e.target.value)} title="Branch" aria-label="Branch" className="w-full p-3 border-2 border-slate-300 rounded-lg bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none text-slate-900 appearance-none text-center font-bold">
                                             {availableBranches.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                                         </select>
                                         <div className="absolute inset-y-0 right-0 flex items-center px-4 pointer-events-none text-slate-500"><ion-icon name="git-branch-outline"></ion-icon></div>
@@ -278,7 +293,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                                 <div className="animate-fadeIn">
                                     <label className="block text-sm font-bold text-blue-700 mb-3 text-center uppercase tracking-wider">ACADEMICS (Top Courses)</label>
                                     <div className="relative max-w-sm mx-auto">
-                                        <select value={academics} onChange={(e) => setAcademics(e.target.value)} className="w-full p-3 border-2 border-blue-200 rounded-lg bg-blue-50 focus:ring-2 focus:ring-blue-500 outline-none text-blue-900 appearance-none text-center font-bold">
+                                        <select value={academics} onChange={(e) => setAcademics(e.target.value)} title="Academic specialization" aria-label="Academic specialization" className="w-full p-3 border-2 border-blue-200 rounded-lg bg-blue-50 focus:ring-2 focus:ring-blue-500 outline-none text-blue-900 appearance-none text-center font-bold">
                                             {availableAcademics.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                                         </select>
                                         <div className="absolute inset-y-0 right-0 flex items-center px-4 pointer-events-none text-blue-500"><ion-icon name="school"></ion-icon></div>
@@ -311,12 +326,13 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                                 className="w-full h-48 border-2 border-dashed border-slate-300 rounded-xl flex flex-col justify-center items-center cursor-pointer hover:border-blue-500 hover:bg-slate-50 transition-colors"
                                 onClick={() => fileInputRef.current?.click()}
                             >
-                                <input
+                                    <input
                                     type="file"
                                     ref={fileInputRef}
                                     onChange={handleFileChange}
                                     className="hidden"
                                     accept=".pdf"
+                                    title="Upload resume PDF"
                                 />
                                 {resumeFile ? (
                                     <>

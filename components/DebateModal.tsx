@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 interface DebateModalProps {
     history: { role: string; parts: { text: string }[] }[];
@@ -9,9 +9,17 @@ interface DebateModalProps {
 
 const DebateModal: React.FC<DebateModalProps> = ({ history, onSend, onClose, title }) => {
     const [input, setInput] = useState('');
+    const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => {
-        document.getElementById('debate-messages-end')?.scrollIntoView({ behavior: "smooth" });
+        if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+        scrollTimerRef.current = setTimeout(() => {
+            document.getElementById('debate-messages-end')?.scrollIntoView({ behavior: "smooth" });
+        }, 80);
+
+        return () => {
+            if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+        };
     }, [history]);
 
     const handleSubmit = (e: React.FormEvent) => {

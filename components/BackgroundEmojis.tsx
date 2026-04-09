@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Stream } from '../types';
 
 interface BackgroundEmojisProps {
@@ -58,6 +58,7 @@ const EMOJI_MAP: Record<string, string[]> = {
 
 const BackgroundEmojis: React.FC<BackgroundEmojisProps> = ({ stream, branch, show }) => {
     const [emojis, setEmojis] = useState<string[]>([]);
+    const isMobile = typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches;
     
     useEffect(() => {
         // Determine which set of emojis to use based on Branch first, then Stream, then General
@@ -79,45 +80,52 @@ const BackgroundEmojis: React.FC<BackgroundEmojisProps> = ({ stream, branch, sho
 
     if (!show) return null;
 
-    // Generate random positions for floating effect
-    const floatingElements = Array.from({ length: 20 }).map((_, i) => { // Increased count to 20
-        const emoji = emojis[i % emojis.length];
-        const left = `${Math.random() * 100}%`;
-        const top = `${Math.random() * 100}%`;
-        // Faster animation: 5s to 15s duration (was 10-30s)
-        const animationDuration = `${5 + Math.random() * 10}s`; 
-        const delay = `${Math.random() * 5}s`;
-        const size = `${2 + Math.random() * 3}rem`; // Random sizes
+    const floatingLayer = useMemo(() => {
+        if (!emojis.length) {
+            return { items: [], styles: '' };
+        }
 
-        return (
-            <div 
-                key={i}
-                className="fixed select-none pointer-events-none z-0 animate-float opacity-60 grayscale filter contrast-125"
-                style={{
-                    left,
-                    top,
-                    fontSize: size,
-                    animation: `float ${animationDuration} ease-in-out infinite`,
-                    animationDelay: delay,
-                    color: '#1a1a1a', // Dark/Black theme preference
-                    textShadow: '0 0 5px rgba(0,0,0,0.2)'
-                }}
-            >
-                {emoji}
-            </div>
-        );
-    });
+        const count = isMobile ? 10 : 20;
+        const items = Array.from({ length: count }).map((_, i) => {
+            const emoji = emojis[i % emojis.length];
+            const left = `${Math.random() * 100}%`;
+            const top = `${Math.random() * 100}%`;
+            const animationDuration = `${5 + Math.random() * 10}s`;
+            const delay = `${Math.random() * 5}s`;
+            const size = `${2 + Math.random() * 3}rem`;
+            const className = `emoji-float-${i}`;
+
+            return {
+                emoji,
+                className,
+                styleRule: `.${className} { left: ${left}; top: ${top}; font-size: ${size}; animation-duration: ${animationDuration}; animation-delay: ${delay}; color: #1a1a1a; text-shadow: 0 0 5px rgba(0,0,0,0.2); }`
+            };
+        });
+
+        return {
+            items,
+            styles: items.map((item) => item.styleRule).join('\n')
+        };
+    }, [emojis, isMobile]);
 
     return (
         <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
             <style>{`
                 @keyframes float {
                     0% { transform: translateY(0px) rotate(0deg); opacity: 0.1; }
-                    50% { transform: translateY(-40px) rotate(20deg); opacity: 0.6; } /* Increased movement range */
+                    50% { transform: translateY(-40px) rotate(20deg); opacity: 0.6; }
                     100% { transform: translateY(0px) rotate(0deg); opacity: 0.1; }
                 }
+                ${floatingLayer.styles}
             `}</style>
-            {floatingElements}
+            {floatingLayer.items.map((item) => (
+                <div
+                    key={item.className}
+                    className={`fixed select-none pointer-events-none z-0 animate-float opacity-60 grayscale filter contrast-125 ${item.className}`}
+                >
+                    {item.emoji}
+                </div>
+            ))}
         </div>
     );
 };

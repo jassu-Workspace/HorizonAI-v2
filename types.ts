@@ -62,12 +62,32 @@ export interface QuizQuestion {
     question: string;
     options: string[];
     correctAnswer: string;
+    explanation?: string;
 }
 
 export interface RapidQuestion {
     question: string;
     options: string[];
     correctAnswer: string;
+    explanation?: string;
+}
+
+export interface AssessmentReviewEntry extends RapidQuestion {
+    selectedAnswer: string | null;
+    isCorrect: boolean;
+}
+
+export interface AssessmentFlowResult {
+    skillName: string;
+    selectedCareer: string;
+    interestDomain: string;
+    questions: RapidQuestion[];
+    selectedAnswers: (string | null)[];
+    score: number;
+    totalQuestions: number;
+    recommendedLevel: 'Beginner' | 'Intermediate' | 'Expert';
+    recommendedWeeks: string;
+    completedAt: string;
 }
 
 export interface Flashcard {

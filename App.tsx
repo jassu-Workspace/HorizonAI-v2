@@ -1,11 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
-import { UserProfile, Suggestion, RoadmapData, ChatMessage, Project, RealWorldScenario, ProjectDetails, SetupStep, TimelineEvent, CareerDetails, MockInterview, QuizQuestion, Flashcard, ConceptConnection, Debate, CareerRecommendation, Toughness, OfflineCenter, Career, AcademicSuggestion, ResumeAnalysis, AssessmentResult } from './types';
+import { UserProfile, Suggestion, RoadmapData, ChatMessage, Project, RealWorldScenario, ProjectDetails, SetupStep, TimelineEvent, CareerDetails, MockInterview, QuizQuestion, Flashcard, ConceptConnection, Debate, CareerRecommendation, Toughness, OfflineCenter, Career, AcademicSuggestion, ResumeAnalysis, AssessmentResult, AssessmentFlowResult } from './types';
 import * as GeminiService from './services/geminiService';
 import { supabase, getCurrentProfile, getPublicRoadmap, updateRoadmapWeek, updateRoadmapProgress, saveProfileFromOnboarding } from './services/supabaseService';
+import { AppContext } from './contexts/AppContext';
 import BackgroundAnimation from './components/BackgroundAnimation';
 import BackgroundEmojis from './components/BackgroundEmojis';
 import IntroOverlay from './components/IntroOverlay';
+import LandingPage from './components/LandingPage';
 import Header from './components/Header';
 import InputForm from './components/InputForm';
 import Suggestions from './components/Suggestions';
@@ -29,19 +31,13 @@ import TrainerDashboard from './components/TrainerDashboard';
 import PolicymakerDashboard from './components/PolicymakerDashboard';
 import Onboarding from './components/Onboarding';
 import { Loader } from './components/Loader';
+import AssessmentResultPage from './components/AssessmentResultPage';
+import ProcessingPage from './components/ProcessingPage';
+import FlowProtectedRoute from './components/FlowProtectedRoute';
 import ProfileEditModal from './components/ProfileEditModal';
 import ImportModal from './components/ImportModal';
 import ShareModal from './components/ShareModal';
 import WeekAssessmentModal from './components/WeekAssessmentModal';
-import {
-    createRoadmapJob,
-    runJob,
-    getJob,
-    getActiveRoadmapJob,
-    getPersistedWorkflowState,
-    clearWorkflowState,
-    toRoadmapResult,
-} from './services/jobService';
 
 const translations = {
     'English': {
@@ -93,6 +89,9 @@ const App: React.FC = () => {
     const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
     const [selectedSkill, setSelectedSkill] = useState<string>('');
     const [roadmapData, setRoadmapData] = useState<RoadmapData | null>(null);
+    const [assessmentResult, setAssessmentResult] = useState<AssessmentFlowResult | null>(null);
+    const [isRoadmapLoading, setIsRoadmapLoading] = useState(false);
+    const [roadmapError, setRoadmapError] = useState('');
     const [errorMessage, setErrorMessage] = useState<string>('');
     const [language, setLanguage] = useState<keyof typeof translations>('English');
     const [animationType, setAnimationType] = useState<AnimationType>('net');
@@ -127,58 +126,12 @@ const App: React.FC = () => {
     const [determinedSkillLevel, setDeterminedSkillLevel] = useState<'Beginner' | 'Intermediate' | 'Expert'>();
     const [modalContent, setModalContent] = useState<{ type: string; data: any } | null>(null);
     const [isProfileEditModalVisible, setProfileEditModalVisible] = useState(false);
-    const [activeRoadmapJobId, setActiveRoadmapJobId] = useState<string | null>(null);
-    const [isAuthenticated, setIsAuthenticated] = useState(false);
-    const [authResolved, setAuthResolved] = useState(false);
-    const [isSubmittingForm, setIsSubmittingForm] = useState(false);
-    const roadmapPollRef = useRef<number | null>(null);
-
-    const stopRoadmapPolling = () => {
-        if (roadmapPollRef.current) {
-            window.clearInterval(roadmapPollRef.current);
-            roadmapPollRef.current = null;
-        }
-    };
-
-    const resolveRoadmapJob = async (jobId: string) => {
-        const job = await getJob(jobId);
-        if (job.status === 'completed') {
-            const result = toRoadmapResult(job);
-            if (result) {
-                setRoadmapData(result);
-                setSelectedSkill(result.skill || selectedSkill);
-                clearWorkflowState();
-                stopRoadmapPolling();
-                setActiveRoadmapJobId(null);
-                navigate('/roadmap');
-                return;
-            }
-        }
-
-        if (job.status === 'failed') {
-            setErrorMessage(job.error || 'Roadmap generation failed.');
-            clearWorkflowState();
-            stopRoadmapPolling();
-            setActiveRoadmapJobId(null);
-            navigate('/error');
-        }
-    };
-
-    const startRoadmapPolling = (jobId: string) => {
-        stopRoadmapPolling();
-        roadmapPollRef.current = window.setInterval(() => {
-            resolveRoadmapJob(jobId).catch(() => {
-                // Keep polling through transient network failures.
-            });
-        }, 3000);
-    };
 
     useEffect(() => {
-        // Run auth check immediately — don't block behind the intro animation timer
-        checkSession();
-
-        // Dismiss intro overlay after 2.5s
-        const timer = setTimeout(() => setIsIntroVisible(false), 2500);
+        const timer = setTimeout(() => {
+            setIsIntroVisible(false);
+            checkSession();
+        }, 3000);
         
         const savedTheme = localStorage.getItem('horizon-theme') as Theme;
         if (savedTheme) {
@@ -188,82 +141,6 @@ const App: React.FC = () => {
 
         return () => clearTimeout(timer);
     }, []);
-
-    // Safety net: if auth check hangs (network issue / Supabase timeout),
-    // force-resolve after 10s so the user never stays stuck on the loader.
-    useEffect(() => {
-        const safetyTimer = setTimeout(() => {
-            setAuthResolved(prev => {
-                if (!prev) {
-                    console.warn('[Horizon] Auth safety timeout — forcing session resolution');
-                    setIsAuthenticated(false);
-                    return true;
-                }
-                return prev;
-            });
-        }, 10000);
-        return () => clearTimeout(safetyTimer);
-    }, []);
-
-    useEffect(() => {
-        const { data: subscription } = supabase.auth.onAuthStateChange(async (event) => {
-            if (event === 'SIGNED_OUT') {
-                setIsAuthenticated(false);
-                setAuthResolved(true);
-                clearWorkflowState();
-                stopRoadmapPolling();
-                navigate('/login');
-            }
-
-            if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-                await checkSession();
-            }
-        });
-
-        return () => {
-            subscription.subscription.unsubscribe();
-        };
-    }, []);
-
-    useEffect(() => {
-        return () => {
-            stopRoadmapPolling();
-        };
-    }, []);
-
-    useEffect(() => {
-        const tryResume = async () => {
-            if (!userProfile?.id) return;
-
-            const persisted = getPersistedWorkflowState();
-            const localJobId = persisted.jobId;
-
-            if (localJobId) {
-                setActiveRoadmapJobId(localJobId);
-                navigate('/loading');
-                startRoadmapPolling(localJobId);
-                try {
-                    await runJob(localJobId);
-                } catch {
-                    // Ignore if already running/completed, polling resolves final state.
-                }
-                return;
-            }
-
-            try {
-                const active = await getActiveRoadmapJob();
-                if (active) {
-                    setActiveRoadmapJobId(active.id);
-                    navigate('/loading');
-                    startRoadmapPolling(active.id);
-                }
-            } catch {
-                // Soft-fail for resume checks.
-            }
-        };
-
-        tryResume();
-    }, [userProfile?.id]);
 
     const toggleTheme = () => {
         const newTheme = theme === 'light' ? 'dark' : 'light';
@@ -280,56 +157,73 @@ const App: React.FC = () => {
         setShowEmojis(prev => !prev);
     };
 
+    const handleGoToAuth = useCallback(() => {
+        navigate('/auth');
+    }, [navigate]);
+
     const checkSession = async () => {
         try {
+            // Check for Shared Roadmap URL Query Param manually if needed, or handle via route params
+            // Here we prioritize session check logic
             const { data: { session }, error: sessionError } = await supabase.auth.getSession();
             if (sessionError) throw sessionError;
     
             if (session) {
-                setIsAuthenticated(true);
                 let profile = await getCurrentProfile();
                 
                 if (!profile) {
-                    const stubProfile: UserProfile = {
-                        id: session.user.id,
-                        role: 'user',
-                        fullName: session.user.email?.split('@')[0] || 'User',
-                        skills: '', interests: '',
-                        learningStyle: 'Balanced', academicLevel: 'Graduation', stream: 'General', focusArea: 'General'
-                    };
-                    await saveProfileFromOnboarding(stubProfile);
-                    profile = stubProfile;
+                     // Check if metadata has role for trainers/policymakers who might not have completed full onboarding
+                     const metadataRole = session.user.user_metadata?.role;
+                     if (metadataRole === 'trainer' || metadataRole === 'policymaker') {
+                         const stubProfile: UserProfile = {
+                             id: session.user.id,
+                             role: metadataRole,
+                             fullName: session.user.email?.split('@')[0] || 'User',
+                             skills: '', interests: '', 
+                             learningStyle: 'Balanced', academicLevel: 'Graduation', stream: 'General', focusArea: 'General'
+                         };
+                         await saveProfileFromOnboarding(stubProfile);
+                         profile = stubProfile;
+                     }
                 }
 
                 if (profile) {
                     setUserProfile(profile);
-
-                    if (location.pathname === '/login' || location.pathname === '/auth' || location.pathname === '/') {
-                        navigate('/create');
+                    
+                    if (location.pathname === '/auth' || location.pathname === '/onboarding' || location.pathname === '/dashboard') {
+                        if (profile.role === 'trainer' || profile.role === 'policymaker') {
+                            navigate('/dashboard');
+                        } else {
+                            if (profile.academicLevel) {
+                                navigate('/dashboard');
+                            } else {
+                                navigate('/onboarding');
+                            }
+                        }
                     }
                 } else {
-                    setIsAuthenticated(false);
-                    navigate('/login');
+                    if (location.pathname !== '/') {
+                        navigate('/onboarding');
+                    }
                 }
             } else {
-                setIsAuthenticated(false);
-                if (location.pathname !== '/login' && location.pathname !== '/auth') {
-                    navigate('/login');
-                }
+                  // If not logged in and not on the landing page or a shared roadmap, redirect to auth
+                  if (location.pathname !== '/' && location.pathname !== '/auth' && !location.search.includes('roadmapId')) {
+                    navigate('/auth');
+                 }
             }
         } catch (error: any) {
             console.error("Error during session check:", error);
             setErrorMessage("Could not connect to your session. Please check your internet connection and try again.");
-            setIsAuthenticated(false);
-            navigate('/login');
-        } finally {
-            setAuthResolved(true);
         }
     };
 
     const handleAuthSuccess = async () => {
         await checkSession();
-        navigate('/create');
+    };
+
+    const handleGuestAccess = () => {
+        navigate('/auth');
     };
 
     const handleOnboardingComplete = (profileData: Partial<UserProfile>) => {
@@ -342,10 +236,9 @@ const App: React.FC = () => {
     };
 
     const handleProfileSubmit = async (profile: UserProfile) => {
-        setIsSubmittingForm(true);
+        navigate('/loading'); // Use a loading route or overlay
         setUserProfile(profile);
         setErrorMessage('');
-        navigate('/loading');
         try {
             const effectiveSkill = profile.skills || profile.interests;
             if (!effectiveSkill) {
@@ -354,41 +247,39 @@ const App: React.FC = () => {
                 return;
             }
             const suggestions = await GeminiService.getSkillSuggestions(profile);
-            if (!suggestions || suggestions.length === 0) {
-                setErrorMessage("No skill suggestions could be generated. Please try a different skill or interest.");
-                navigate('/create');
-                return;
-            }
             setSuggestions(suggestions);
             navigate('/suggestions');
         } catch (error: any) {
-            const msg = error?.message || 'Something went wrong. Please try again.';
-            setErrorMessage(msg);
-            navigate('/create');
-        } finally {
-            setIsSubmittingForm(false);
+            setErrorMessage(error.message);
+            navigate('/error');
         }
     };
-
 
     const handleRefresh = () => handleProfileSubmit(userProfile);
 
     const handleSelectSkill = (skill: string) => {
         setSelectedSkill(skill);
+        setAssessmentResult(null);
+        setRoadmapError('');
+        setIsRoadmapLoading(false);
         navigate('/configure');
     };
 
+    const handleAssessmentComplete = (result: AssessmentFlowResult) => {
+        setAssessmentResult(result);
+        setSelectedSkill(result.selectedCareer);
+        setRoadmapData(null);
+        setRoadmapError('');
+        setIsRoadmapLoading(false);
+        navigate('/assessment-result');
+    };
+
     const handleGenerateRoadmap = async (weeks: string, level: string) => {
-        navigate('/loading');
         setErrorMessage('');
         try {
-            const job = await createRoadmapJob(selectedSkill, weeks, level, userProfile);
-            setActiveRoadmapJobId(job.id);
-            startRoadmapPolling(job.id);
-            await runJob(job.id).catch(() => {
-                // Job can already be running/completed; polling finalizes UI.
-            });
-            await resolveRoadmapJob(job.id);
+            const data = await GeminiService.getRoadmap(selectedSkill, weeks, level, userProfile);
+            setRoadmapData(data);
+            navigate('/result');
         } catch (error: any) {
             setErrorMessage(error.message);
             navigate('/error');
@@ -396,10 +287,10 @@ const App: React.FC = () => {
     };
     
     const handleStartOver = () => {
-        clearWorkflowState();
-        stopRoadmapPolling();
-        setActiveRoadmapJobId(null);
         setRoadmapData(null);
+        setAssessmentResult(null);
+        setRoadmapError('');
+        setIsRoadmapLoading(false);
         setSelectedSkill('');
         setSuggestions([]);
         navigate('/create');
@@ -408,7 +299,10 @@ const App: React.FC = () => {
     const handleSelectSavedRoadmap = async (savedMap: RoadmapData) => {
         setRoadmapData(savedMap);
         setSelectedSkill(savedMap.skill);
-        navigate('/roadmap');
+        setAssessmentResult(null);
+        setRoadmapError('');
+        setIsRoadmapLoading(false);
+        navigate('/result');
     };
     
     const handleRefreshMockInterview = async () => {
@@ -424,7 +318,10 @@ const App: React.FC = () => {
     const handleImportSuccess = (importedMap: RoadmapData) => {
         setRoadmapData(importedMap);
         setSelectedSkill(importedMap.skill);
-        navigate('/roadmap');
+        setAssessmentResult(null);
+        setRoadmapError('');
+        setIsRoadmapLoading(false);
+        navigate('/result');
         setModalContent(null);
         alert(`Imported roadmap for ${importedMap.skill} successfully!`);
     };
@@ -649,136 +546,134 @@ const App: React.FC = () => {
     }, []);
 
     const isDashboardRoute = location.pathname === '/dashboard';
+    const isLandingRoute = location.pathname === '/';
     const showDashboardButton = !!userProfile.id && !isDashboardRoute;
+    const showIntroOverlay = isIntroVisible && !isLandingRoute;
 
-    if (!authResolved) {
-        return (
-            <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 dark:bg-slate-900">
-                <Loader message="Restoring your secure session..." subMessages={['Checking your credentials...', 'Loading your profile...', 'Almost ready...']} />
-            </div>
-        );
-    }
-
-    const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-        if (!isAuthenticated) {
-            return <Navigate to="/login" replace />;
-        }
-        return <>{children}</>;
+    const appContextValue = {
+        userProfile,
+        setUserProfile,
+        selectedSkill,
+        setSelectedSkill,
+        selectedCareer: selectedSkill,
+        setSelectedCareer: setSelectedSkill,
+        assessmentResult,
+        setAssessmentResult,
+        roadmapResult: roadmapData,
+        setRoadmapResult: setRoadmapData,
+        isRoadmapLoading,
+        setIsRoadmapLoading,
+        roadmapError,
+        setRoadmapError,
     };
 
     return (
-        <div className="min-h-screen bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-sans flex flex-col transition-colors duration-300 relative">
-            <BackgroundAnimation animationType={animationType} />
-            <BackgroundEmojis stream={userProfile.stream} branch={userProfile.academicCourse} show={showEmojis} />
+        <AppContext.Provider value={appContextValue}>
+            <div className="min-h-screen bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-sans flex flex-col transition-colors duration-300 relative">
+                <BackgroundAnimation animationType={animationType} />
+                <BackgroundEmojis stream={userProfile.stream} branch={userProfile.academicCourse} show={showEmojis} />
 
-            <IntroOverlay isVisible={isIntroVisible} />
-            
-            <div className={`flex-grow flex flex-col transition-opacity duration-500 ${isIntroVisible ? 'opacity-0' : 'opacity-100'} relative z-10`}>
-                {location.pathname !== '/login' && (
-                    <Header 
-                        language={language} 
-                        onLanguageChange={(lang) => setLanguage(lang as keyof typeof translations)} 
-                        title={translations[language].headerTitle}
-                        subtitle={translations[language].headerSubtitle}
-                        onToggleAnimation={handleAnimationToggle}
-                        currentAnimation={animationType}
-                        onResumeSession={() => {}}
-                        hasSavedSession={hasSavedSession}
-                        onShowDashboard={() => navigate('/dashboard')}
-                        showDashboardButton={showDashboardButton}
-                        theme={theme}
-                        toggleTheme={toggleTheme}
-                        onToggleEmojis={toggleEmojis}
-                        showEmojis={showEmojis}
-                    />
-                )}
-                <main className="flex-grow container mx-auto px-3 sm:px-4 pb-8">
-                    <Routes>
-                        <Route path="/login" element={isAuthenticated ? <Navigate to="/create" replace /> : <Auth onAuthSuccess={handleAuthSuccess} />} />
-                        <Route path="/auth" element={<Navigate to="/login" replace />} />
-                        <Route path="/onboarding" element={<Navigate to="/create" replace />} />
-                        <Route path="/dashboard" element={
-                            <ProtectedRoute>
-                            {userProfile.role === 'trainer' ? <TrainerDashboard /> :
-                            userProfile.role === 'admin' ? <PolicymakerDashboard /> :
-                            <Dashboard
-                                onSelectRoadmap={handleSelectSavedRoadmap}
-                                onNewRoadmap={() => navigate('/create')}
-                                onImportRoadmap={() => handleFeatureClick('import-roadmap', null)}
-                                onAnalyzeResume={(text) => handleFeatureClick('resume-analyzer', { resumeText: text })}
-                                onEditProfile={() => setProfileEditModalVisible(true)}
-                            />}
-                            </ProtectedRoute>
-                        } />
-                        <Route path="/create" element={
-                            <ProtectedRoute>
-                            <InputForm existingProfile={userProfile} onSubmit={handleProfileSubmit} title={translations[language].formTitle} isLoading={isSubmittingForm} errorMessage={errorMessage} />
-                            </ProtectedRoute>
-                        } />
-                        <Route path="/suggestions" element={
-                            <ProtectedRoute>
-                            <Suggestions suggestions={suggestions} onSelect={handleSelectSkill} onRefresh={handleRefresh} />
-                            </ProtectedRoute>
-                        } />
-                        <Route path="/configure" element={
-                            <ProtectedRoute>
-                            <ConfigureRoadmap 
-                                skillName={selectedSkill} 
-                                interestDomain={userProfile.interests} 
-                                onGenerate={handleGenerateRoadmap} 
-                                onBack={() => navigate('/suggestions')} 
-                                onTakeQuiz={handleTakeSkillQuiz} 
-                                determinedSkillLevel={determinedSkillLevel}
-                            />
-                            </ProtectedRoute>
-                        } />
-                        <Route path="/roadmap" element={
-                            <ProtectedRoute>
-                            {roadmapData ? (
-                                <Roadmap 
-                                    data={roadmapData} 
-                                    userProfile={userProfile} 
-                                    onStartOver={handleStartOver} 
-                                    onFeatureClick={handleFeatureClick} 
-                                    setRoadmapData={setRoadmapData} 
+                <IntroOverlay isVisible={showIntroOverlay} />
+                
+                <div className={`flex-grow flex flex-col transition-opacity duration-500 ${showIntroOverlay ? 'opacity-0' : 'opacity-100'} relative z-10`}>
+                    {location.pathname !== '/auth' && location.pathname !== '/onboarding' && location.pathname !== '/' && (
+                        <Header 
+                            language={language} 
+                            onLanguageChange={(lang) => setLanguage(lang as keyof typeof translations)} 
+                            title={translations[language].headerTitle}
+                            subtitle={translations[language].headerSubtitle}
+                            onToggleAnimation={handleAnimationToggle}
+                            currentAnimation={animationType}
+                            onResumeSession={() => {}}
+                            hasSavedSession={hasSavedSession}
+                            onShowDashboard={() => navigate('/dashboard')}
+                            showDashboardButton={showDashboardButton}
+                            theme={theme}
+                            toggleTheme={toggleTheme}
+                            onToggleEmojis={toggleEmojis}
+                            showEmojis={showEmojis}
+                        />
+                    )}
+                    <main className="flex-grow w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-8">
+                        <Routes>
+                            <Route path="/" element={<LandingPage theme={theme} toggleTheme={toggleTheme} animationType={animationType} onToggleAnimation={handleAnimationToggle} onGoToAuth={handleGoToAuth} />} />
+                            <Route path="/auth" element={<Auth onAuthSuccess={handleAuthSuccess} onGuestAccess={handleGuestAccess} />} />
+                            <Route path="/onboarding" element={<Onboarding onComplete={handleOnboardingComplete} />} />
+                            <Route path="/dashboard" element={
+                                userProfile.role === 'trainer' ? <TrainerDashboard /> :
+                                userProfile.role === 'policymaker' ? <PolicymakerDashboard /> :
+                                <Dashboard 
+                                    onSelectRoadmap={handleSelectSavedRoadmap} 
+                                    onNewRoadmap={() => navigate('/create')} 
+                                    onImportRoadmap={() => handleFeatureClick('import-roadmap', null)}
+                                    onAnalyzeResume={(text) => handleFeatureClick('resume-analyzer', { resumeText: text })} 
+                                    onEditProfile={() => setProfileEditModalVisible(true)}
                                 />
-                            ) : <Navigate to="/create" />
-                            }
-                            </ProtectedRoute>
-                        } />
-                        <Route path="/loading" element={<ProtectedRoute><Loader message="Working our magic..." /></ProtectedRoute>} />
-                        <Route path="/error" element={
-                            <div className="flex items-center justify-center py-12 px-4">
-                                <div className="glass-card max-w-lg w-full p-8 text-center">
-                                    <div className="w-16 h-16 bg-red-100 dark:bg-red-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                                        </svg>
-                                    </div>
-                                    <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">Something went wrong</h2>
-                                    <p className="text-red-600 dark:text-red-400 font-medium bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-3 rounded-lg mb-6 text-sm">
-                                        {errorMessage || 'An unexpected error occurred. Please try again.'}
-                                    </p>
-                                    <div className="flex flex-col sm:flex-row gap-3 justify-center">
-                                        <button onClick={() => navigate(-1)} className="px-6 py-2.5 rounded-full border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 font-medium hover:bg-slate-100 dark:hover:bg-slate-800 transition-all">
-                                            ← Go Back
-                                        </button>
-                                        <button onClick={handleStartOver} className="dynamic-button">
-                                            Start Over
-                                        </button>
-                                    </div>
+                            } />
+                            <Route path="/create" element={
+                                <InputForm existingProfile={userProfile} onSubmit={handleProfileSubmit} title={translations[language].formTitle} />
+                            } />
+                            <Route path="/suggestions" element={
+                                <Suggestions suggestions={suggestions} onSelect={handleSelectSkill} onRefresh={handleRefresh} />
+                            } />
+                            <Route path="/configure" element={
+                                <ConfigureRoadmap 
+                                    skillName={selectedSkill} 
+                                    interestDomain={userProfile.interests} 
+                                    onAssessmentComplete={handleAssessmentComplete} 
+                                    onBack={() => navigate('/suggestions')} 
+                                    onTakeQuiz={handleTakeSkillQuiz} 
+                                    determinedSkillLevel={determinedSkillLevel}
+                                />
+                            } />
+                            <Route path="/assessment-result" element={
+                                <FlowProtectedRoute requireAssessment>
+                                    <AssessmentResultPage />
+                                </FlowProtectedRoute>
+                            } />
+                            <Route path="/processing" element={
+                                <FlowProtectedRoute requireAssessment>
+                                    <ProcessingPage />
+                                </FlowProtectedRoute>
+                            } />
+                            <Route path="/result" element={
+                                <FlowProtectedRoute requireRoadmap>
+                                    {roadmapData ? (
+                                        <Roadmap 
+                                            data={roadmapData} 
+                                            userProfile={userProfile} 
+                                            onStartOver={handleStartOver} 
+                                            onFeatureClick={handleFeatureClick} 
+                                            setRoadmapData={setRoadmapData} 
+                                        />
+                                    ) : <Navigate to="/assessment-result" replace />}
+                                </FlowProtectedRoute>
+                            } />
+                            <Route path="/roadmap" element={
+                                roadmapData ? (
+                                    <Roadmap 
+                                        data={roadmapData} 
+                                        userProfile={userProfile} 
+                                        onStartOver={handleStartOver} 
+                                        onFeatureClick={handleFeatureClick} 
+                                        setRoadmapData={setRoadmapData} 
+                                    />
+                                ) : <Navigate to="/create" replace />
+                            } />
+                            <Route path="/loading" element={<Loader message="Working our magic..." />} />
+                            <Route path="/error" element={
+                                <div className="text-center px-2">
+                                    <p className="text-red-500 font-semibold bg-red-100 p-4 rounded-lg">{errorMessage}</p>
+                                    <button onClick={handleStartOver} className="dynamic-button mt-4 w-full sm:w-auto">Try Again</button>
                                 </div>
-                            </div>
-                        } />
-
-                        <Route path="/" element={<Navigate to={isAuthenticated ? '/create' : '/login'} replace />} />
-                        <Route path="*" element={<Navigate to={isAuthenticated ? '/create' : '/login'} replace />} />
-                    </Routes>
-                </main>
-            </div>
+                            } />
+                            <Route path="*" element={<Navigate to="/" replace />} />
+                        </Routes>
+                    </main>
+                </div>
 
 
-            {roadmapData && location.pathname === '/roadmap' && <AiCoachFab onOpen={() => setCoachModalVisible(true)} />}
+                {roadmapData && (location.pathname === '/roadmap' || location.pathname === '/result') && <AiCoachFab onOpen={() => setCoachModalVisible(true)} />}
 
             {isCoachModalVisible && <AiCoachModal history={chatHistory} onSend={handleCoachSend} onClose={() => setCoachModalVisible(false)} title={`AI Coach for ${selectedSkill}`} />}
             {isDebateModalVisible && <DebateModal history={debateHistory} onSend={handleDebateSend} onClose={() => setDebateModalVisible(false)} title={debateTopic} />}
@@ -857,7 +752,7 @@ const App: React.FC = () => {
                         <div className="space-y-4">
                             <div className="bg-cyan-50 dark:bg-cyan-900/30 p-4 rounded-xl border border-cyan-100 dark:border-cyan-800 mb-4">
                                 <p className="text-cyan-800 dark:text-cyan-200 text-sm">
-                                    <ion-icon name="information-circle" className="align-middle mr-1"></ion-icon>
+                                    <span className="align-middle mr-1" aria-hidden="true">ℹ</span>
                                     Understanding how <strong>{modalContent.data.theme}</strong> connects to other disciplines helps deepen your knowledge.
                                 </p>
                             </div>
@@ -865,7 +760,7 @@ const App: React.FC = () => {
                                 <div key={i} className="p-5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-sm hover:shadow-md transition-shadow">
                                     <h4 className="font-bold text-slate-800 dark:text-slate-100 mb-2 flex items-center gap-2 text-lg">
                                         <div className="w-8 h-8 rounded-full bg-cyan-100 text-cyan-600 flex items-center justify-center">
-                                            <ion-icon name="git-network-outline"></ion-icon>
+                                            <span aria-hidden="true">⇄</span>
                                         </div>
                                         {c.field}
                                     </h4>
@@ -978,7 +873,8 @@ const App: React.FC = () => {
                     )}
                 </Modal>
             )}
-        </div>
+            </div>
+        </AppContext.Provider>
     );
 };
 

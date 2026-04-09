@@ -177,6 +177,14 @@ export const saveProfileFromOnboarding = async (profile: UserProfile) => {
     // this will update it. If the trigger failed, this will insert it.
     let { error } = await supabase.from('profiles').upsert(profileData, { onConflict: 'id' });
 
+    const errorMessage = String(error?.message || '').toLowerCase();
+
+    if (error && (errorMessage.includes('full_name') || errorMessage.includes('schema cache'))) {
+        throw new Error(
+            "Your Supabase database is missing the profiles.full_name column or the schema cache is stale. Run the latest supabase_schema.sql, then reload the schema cache and try again."
+        );
+    }
+
     // Fallback for older schemas that do not yet include all optional columns.
     if (error && (error.code === '42703' || String(error.message || '').toLowerCase().includes('column'))) {
         const minimalProfileData = {

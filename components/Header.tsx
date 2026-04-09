@@ -33,84 +33,98 @@ const Header: React.FC<HeaderProps> = ({
     };
 
     return (
-        <header className="p-3 sm:p-6 mb-4 sm:mb-8 relative z-10">
-            <div className="flex flex-col gap-3 sm:gap-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                        {showDashboardButton && (
-                            <button onClick={onShowDashboard} className="text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 transition-colors text-xs sm:text-sm flex items-center gap-1 border border-slate-200 dark:border-slate-600 rounded-full px-2.5 sm:px-3 py-1 bg-white/80 dark:bg-slate-800/80 font-medium shadow-sm">
-                                <ion-icon name="grid-outline"></ion-icon> My Dashboard
-                            </button>
-                        )}
-                        <button onClick={handleSignOut} className="text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-colors text-xs sm:text-sm flex items-center gap-1 border border-slate-200 dark:border-slate-600 rounded-full px-2.5 sm:px-3 py-1 bg-white/50 dark:bg-slate-800/50">
-                            <ion-icon name="log-out-outline"></ion-icon> Sign Out
-                        </button>
-                    </div>
-
-                    <div className="flex flex-wrap items-center justify-end gap-2">
-                 {/* Focus Mode Toggle (Emojis) */}
-                 {onToggleEmojis && (
-                    <button 
-                        onClick={onToggleEmojis}
-                        className={`flex items-center justify-center w-10 h-10 text-lg font-medium border rounded-lg shadow-sm transition-colors ${showEmojis ? 'bg-blue-100 text-blue-600 border-blue-200' : 'bg-white/50 text-slate-400 border-slate-300'}`}
-                        title={showEmojis ? "Enable Focus Mode (Hide Emojis)" : "Disable Focus Mode (Show Emojis)"}
-                    >
-                        <ion-icon name={showEmojis ? "eye-outline" : "eye-off-outline"}></ion-icon>
-                    </button>
-                 )}
-
-                 <button 
-                    onClick={toggleTheme}
-                    className="flex items-center justify-center w-10 h-10 text-lg font-medium text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-600 rounded-lg shadow-sm hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-                    title={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Mode`}
-                >
-                    <ion-icon name={theme === 'light' ? 'moon-outline' : 'sunny-outline'}></ion-icon>
-                </button>
-                 <button 
-                    onClick={onToggleAnimation}
-                    className="flex items-center justify-center w-10 h-10 text-lg font-medium text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-600 rounded-lg shadow-sm hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-                    title={`Switch to ${currentAnimation === 'net' ? 'Globe' : 'Net'} background`}
-                >
-                    <ion-icon name={currentAnimation === 'net' ? 'globe-outline' : 'grid-outline'}></ion-icon>
-                </button>
-                <div className="relative">
-                    <button 
-                        onClick={() => setDropdownOpen(prev => !prev)}
-                        className="flex items-center gap-2 px-2.5 sm:px-3 py-2 text-xs sm:text-sm font-medium text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-600 rounded-lg shadow-sm hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors h-10"
-                    >
-                        <ion-icon name="language-outline"></ion-icon>
-                        <span className="max-w-[88px] sm:max-w-none truncate">{language}</span>
-                        <ion-icon name="chevron-down-outline" className={`text-xs transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`}></ion-icon>
-                    </button>
-                    {isDropdownOpen && (
-                        <div className="absolute right-0 mt-2 w-40 bg-white dark:bg-slate-800 rounded-lg shadow-xl z-20 py-1 border border-slate-200 dark:border-slate-700" onMouseLeave={() => setDropdownOpen(false)}>
-                            {languages.map(lang => (
-                                <a 
-                                    href="#" 
-                                    key={lang} 
-                                    onClick={(e) => {
-                                        e.preventDefault();
-                                        onLanguageChange(lang);
-                                        setDropdownOpen(false);
-                                    }} 
-                                    className="block px-4 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
+        <header className="relative z-10 px-3 py-3 sm:px-6 sm:py-6 mb-4 sm:mb-8">
+            <div className="mx-auto max-w-6xl">
+                <div className="flex flex-col gap-4 sm:gap-5">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="flex flex-wrap items-center justify-center lg:justify-start gap-2">
+                            {showDashboardButton && (
+                                <button
+                                    onClick={onShowDashboard}
+                                    className="inline-flex items-center gap-2 rounded-full border border-slate-200/70 bg-white/65 px-3 py-2 text-xs sm:text-sm font-medium text-slate-700 shadow-sm backdrop-blur-md transition-colors hover:bg-white/85 dark:border-slate-700/70 dark:bg-slate-800/60 dark:text-slate-200 dark:hover:bg-slate-700/85"
                                 >
-                                    {lang}
-                                </a>
-                            ))}
+                                    <ion-icon name="grid-outline"></ion-icon>
+                                    My Dashboard
+                                </button>
+                            )}
+                            <button
+                                onClick={handleSignOut}
+                                className="inline-flex items-center gap-2 rounded-full border border-slate-200/70 bg-white/55 px-3 py-2 text-xs sm:text-sm font-medium text-slate-600 shadow-sm backdrop-blur-md transition-colors hover:bg-white/80 hover:text-red-600 dark:border-slate-700/70 dark:bg-slate-800/50 dark:text-slate-300 dark:hover:bg-slate-700/80 dark:hover:text-red-300"
+                            >
+                                <ion-icon name="log-out-outline"></ion-icon>
+                                Sign Out
+                            </button>
                         </div>
-                    )}
-                </div>
-                    </div>
-                </div>
 
-                <div className="text-center px-1">
-                    <h1 className="text-3xl sm:text-5xl md:text-6xl font-bold text-slate-900 dark:text-white leading-tight break-words" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-                        {title}
-                    </h1>
-                    <p className="mt-2 sm:mt-4 text-base sm:text-lg text-slate-600 dark:text-slate-300 max-w-2xl mx-auto">
-                        {subtitle}
-                    </p>
+                        <div className="flex flex-wrap items-center justify-center lg:justify-end gap-2">
+                            {onToggleEmojis && (
+                                <button
+                                    onClick={onToggleEmojis}
+                                    className={`inline-flex h-10 w-10 items-center justify-center rounded-full border text-lg shadow-sm backdrop-blur-md transition-colors ${showEmojis ? 'border-blue-200 bg-blue-100/90 text-blue-600 dark:border-blue-400/40 dark:bg-blue-500/15 dark:text-blue-300' : 'border-slate-200/70 bg-white/60 text-slate-400 dark:border-slate-700/70 dark:bg-slate-800/60 dark:text-slate-500'}`}
+                                    title={showEmojis ? 'Enable Focus Mode (Hide Emojis)' : 'Disable Focus Mode (Show Emojis)'}
+                                >
+                                    <ion-icon name={showEmojis ? 'eye-outline' : 'eye-off-outline'}></ion-icon>
+                                </button>
+                            )}
+
+                            <button
+                                onClick={toggleTheme}
+                                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-200/70 bg-white/60 text-lg text-slate-700 shadow-sm backdrop-blur-md transition-colors hover:bg-white/85 dark:border-slate-700/70 dark:bg-slate-800/60 dark:text-slate-200 dark:hover:bg-slate-700/85"
+                                title={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Mode`}
+                            >
+                                <ion-icon name={theme === 'light' ? 'moon-outline' : 'sunny-outline'}></ion-icon>
+                            </button>
+
+                            <button
+                                onClick={onToggleAnimation}
+                                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-200/70 bg-white/60 text-lg text-slate-700 shadow-sm backdrop-blur-md transition-colors hover:bg-white/85 dark:border-slate-700/70 dark:bg-slate-800/60 dark:text-slate-200 dark:hover:bg-slate-700/85"
+                                title={`Switch to ${currentAnimation === 'net' ? 'Globe' : 'Net'} background`}
+                            >
+                                <ion-icon name={currentAnimation === 'net' ? 'globe-outline' : 'grid-outline'}></ion-icon>
+                            </button>
+
+                            <div className="relative">
+                                <button
+                                    onClick={() => setDropdownOpen(prev => !prev)}
+                                    className="inline-flex h-10 items-center gap-2 rounded-full border border-slate-200/70 bg-white/60 px-3 text-xs sm:text-sm font-medium text-slate-700 shadow-sm backdrop-blur-md transition-colors hover:bg-white/85 dark:border-slate-700/70 dark:bg-slate-800/60 dark:text-slate-200 dark:hover:bg-slate-700/85"
+                                >
+                                    <ion-icon name="language-outline"></ion-icon>
+                                    <span className="max-w-[88px] truncate">{language}</span>
+                                    <ion-icon name="chevron-down-outline" className={`text-xs transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`}></ion-icon>
+                                </button>
+
+                                {isDropdownOpen && (
+                                    <div
+                                        className="absolute right-0 mt-2 w-44 overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 py-1 shadow-xl backdrop-blur-md dark:border-slate-700/80 dark:bg-slate-900/95"
+                                        onMouseLeave={() => setDropdownOpen(false)}
+                                    >
+                                        {languages.map(lang => (
+                                            <button
+                                                type="button"
+                                                key={lang}
+                                                onClick={() => {
+                                                    onLanguageChange(lang);
+                                                    setDropdownOpen(false);
+                                                }}
+                                                className="block w-full px-4 py-2.5 text-left text-sm text-slate-700 transition-colors hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                                            >
+                                                {lang}
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="text-center px-1 sm:px-6">
+                        <h1 className="font-space-grotesk text-4xl font-bold leading-tight text-slate-900 break-words sm:text-5xl md:text-6xl dark:text-white">
+                            {title}
+                        </h1>
+                        <p className="mx-auto mt-3 max-w-2xl text-sm text-slate-600 sm:mt-4 sm:text-lg dark:text-slate-300">
+                            {subtitle}
+                        </p>
+                    </div>
                 </div>
             </div>
         </header>

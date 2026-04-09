@@ -1,4 +1,4 @@
--- Horizon AI - full idempotent Supabase schema
+-- Horizon AI - Supabase schema mapped to current codebase
 -- Run in Supabase SQL Editor as role postgres.
 
 create extension if not exists pgcrypto;
@@ -9,7 +9,7 @@ create extension if not exists pgcrypto;
 create table if not exists public.profiles (
   id text primary key,
   full_name text,
-  role text default 'user',
+  role text default 'learner',
   academic_level text,
   stream text,
   academic_course text,
@@ -28,8 +28,9 @@ create table if not exists public.profiles (
   updated_at timestamptz default now()
 );
 
+-- Ensure missing columns are added for existing projects.
 alter table public.profiles add column if not exists full_name text;
-alter table public.profiles add column if not exists role text default 'user';
+alter table public.profiles add column if not exists role text default 'learner';
 alter table public.profiles add column if not exists academic_level text;
 alter table public.profiles add column if not exists stream text;
 alter table public.profiles add column if not exists academic_course text;
@@ -49,64 +50,6 @@ alter table public.profiles add column if not exists updated_at timestamptz defa
 
 alter table public.profiles enable row level security;
 
-update public.profiles
-set role = 'admin'
-where role = 'policymaker';
-
-update public.profiles
-set role = 'user'
-where role = 'learner'
-   or role is null
-   or role not in ('user', 'trainer', 'admin');
-
-do $$
-begin
-  if not exists (
-    select 1
-    from pg_constraint
-    where conname = 'profiles_role_check'
-      and conrelid = 'public.profiles'::regclass
-  ) then
-    alter table public.profiles
-      add constraint profiles_role_check
-      check (role in ('user', 'trainer', 'admin'));
-  end if;
-end $$;
-
-create or replace function public.prevent_client_role_escalation()
-returns trigger
-language plpgsql
-as $$
-declare
-  jwt_role text;
-begin
-  jwt_role := coalesce(current_setting('request.jwt.claim.role', true), '');
-
-  if tg_op = 'INSERT' then
-    if jwt_role <> 'service_role' then
-      new.role := 'user';
-    end if;
-    return new;
-  end if;
-
-  if tg_op = 'UPDATE' then
-    if jwt_role <> 'service_role' and new.role is distinct from old.role then
-      raise exception 'role changes are restricted to backend service role';
-    end if;
-    return new;
-  end if;
-
-  return new;
-end;
-$$;
-
-drop trigger if exists trg_prevent_client_role_escalation on public.profiles;
-
-create trigger trg_prevent_client_role_escalation
-before insert or update on public.profiles
-for each row
-execute function public.prevent_client_role_escalation();
-
 drop policy if exists profiles_select_own on public.profiles;
 drop policy if exists profiles_insert_own on public.profiles;
 drop policy if exists profiles_update_own on public.profiles;
@@ -115,136 +58,20 @@ create policy profiles_select_own
 on public.profiles
 for select
 to authenticated
-using (auth.uid()::text = id::text);
+using (auth.uid()::text = id);
 
 create policy profiles_insert_own
 on public.profiles
 for insert
 to authenticated
-with check (auth.uid()::text = id::text);
+with check (auth.uid()::text = id);
 
 create policy profiles_update_own
 on public.profiles
 for update
 to authenticated
-using (auth.uid()::text = id::text)
-with check (auth.uid()::text = id::text);
-
--- =========================
--- AI USAGE QUOTAS
--- =========================
-create table if not exists public.ai_usage_daily (
-  user_id uuid not null,
-  usage_date date not null,
-  tokens_used integer not null default 0,
-  request_count integer not null default 0,
-  blocked_until timestamptz,
-  updated_at timestamptz not null default now(),
-  created_at timestamptz not null default now(),
-  primary key (user_id, usage_date)
-);
-
-alter table public.ai_usage_daily add column if not exists user_id uuid;
-alter table public.ai_usage_daily add column if not exists usage_date date;
-alter table public.ai_usage_daily add column if not exists tokens_used integer default 0;
-alter table public.ai_usage_daily add column if not exists request_count integer default 0;
-alter table public.ai_usage_daily add column if not exists blocked_until timestamptz;
-alter table public.ai_usage_daily add column if not exists updated_at timestamptz default now();
-alter table public.ai_usage_daily add column if not exists created_at timestamptz default now();
-
-alter table public.ai_usage_daily enable row level security;
-
-drop policy if exists ai_usage_daily_select_own on public.ai_usage_daily;
-drop policy if exists ai_usage_daily_insert_own on public.ai_usage_daily;
-drop policy if exists ai_usage_daily_update_own on public.ai_usage_daily;
-
-create policy ai_usage_daily_select_own
-on public.ai_usage_daily
-for select
-to authenticated
-using (auth.uid()::text = user_id::text);
-
-create policy ai_usage_daily_insert_own
-on public.ai_usage_daily
-for insert
-to authenticated
-with check (auth.uid()::text = user_id::text);
-
-create policy ai_usage_daily_update_own
-on public.ai_usage_daily
-for update
-to authenticated
-using (auth.uid()::text = user_id::text)
-with check (auth.uid()::text = user_id::text);
-
--- =========================
--- RESUMABLE JOBS
--- =========================
-create table if not exists public.jobs (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null,
-  type text not null,
-  status text not null default 'pending',
-  progress integer not null default 0,
-  idempotency_key text not null,
-  payload jsonb not null default '{}'::jsonb,
-  result jsonb,
-  error text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint jobs_status_check check (status in ('pending', 'running', 'completed', 'failed')),
-  constraint jobs_progress_check check (progress >= 0 and progress <= 100)
-);
-
-alter table public.jobs add column if not exists user_id uuid;
-alter table public.jobs add column if not exists type text;
-alter table public.jobs add column if not exists status text default 'pending';
-alter table public.jobs add column if not exists progress integer default 0;
-alter table public.jobs add column if not exists idempotency_key text;
-alter table public.jobs add column if not exists payload jsonb default '{}'::jsonb;
-alter table public.jobs add column if not exists result jsonb;
-alter table public.jobs add column if not exists error text;
-alter table public.jobs add column if not exists created_at timestamptz default now();
-alter table public.jobs add column if not exists updated_at timestamptz default now();
-
-do $$
-begin
-  begin
-    create unique index if not exists jobs_user_type_idempotency_idx
-      on public.jobs (user_id, type, idempotency_key);
-  exception
-    when unique_violation then
-      raise notice 'Skipped jobs_user_type_idempotency_idx due to duplicate rows.';
-  end;
-end $$;
-
-create index if not exists jobs_user_status_updated_idx
-  on public.jobs (user_id, status, updated_at desc);
-
-alter table public.jobs enable row level security;
-
-drop policy if exists jobs_select_own on public.jobs;
-drop policy if exists jobs_insert_own on public.jobs;
-drop policy if exists jobs_update_own on public.jobs;
-
-create policy jobs_select_own
-on public.jobs
-for select
-to authenticated
-using (auth.uid()::text = user_id::text);
-
-create policy jobs_insert_own
-on public.jobs
-for insert
-to authenticated
-with check (auth.uid()::text = user_id::text);
-
-create policy jobs_update_own
-on public.jobs
-for update
-to authenticated
-using (auth.uid()::text = user_id::text)
-with check (auth.uid()::text = user_id::text);
+using (auth.uid()::text = id)
+with check (auth.uid()::text = id);
 
 -- =========================
 -- ROADMAPS
@@ -276,20 +103,20 @@ create policy roadmaps_select_own_or_public
 on public.roadmaps
 for select
 to authenticated
-using (user_id::text = auth.uid()::text or is_public = true);
+using (user_id = auth.uid()::text or is_public = true);
 
 create policy roadmaps_insert_own
 on public.roadmaps
 for insert
 to authenticated
-with check (user_id::text = auth.uid()::text);
+with check (user_id = auth.uid()::text);
 
 create policy roadmaps_update_own
 on public.roadmaps
 for update
 to authenticated
-using (user_id::text = auth.uid()::text)
-with check (user_id::text = auth.uid()::text);
+using (user_id = auth.uid()::text)
+with check (user_id = auth.uid()::text);
 
 -- =========================
 -- ROADMAP WEEKS
@@ -330,10 +157,9 @@ for select
 to authenticated
 using (
   exists (
-    select 1
-    from public.roadmaps r
-    where r.id::text = roadmap_weeks.roadmap_id::text
-      and (r.user_id::text = auth.uid()::text or r.is_public = true)
+    select 1 from public.roadmaps r
+    where r.id = roadmap_weeks.roadmap_id
+      and (r.user_id = auth.uid()::text or r.is_public = true)
   )
 );
 
@@ -343,10 +169,9 @@ for insert
 to authenticated
 with check (
   exists (
-    select 1
-    from public.roadmaps r
-    where r.id::text = roadmap_weeks.roadmap_id::text
-      and r.user_id::text = auth.uid()::text
+    select 1 from public.roadmaps r
+    where r.id = roadmap_weeks.roadmap_id
+      and r.user_id = auth.uid()::text
   )
 );
 
@@ -356,18 +181,16 @@ for update
 to authenticated
 using (
   exists (
-    select 1
-    from public.roadmaps r
-    where r.id::text = roadmap_weeks.roadmap_id::text
-      and r.user_id::text = auth.uid()::text
+    select 1 from public.roadmaps r
+    where r.id = roadmap_weeks.roadmap_id
+      and r.user_id = auth.uid()::text
   )
 )
 with check (
   exists (
-    select 1
-    from public.roadmaps r
-    where r.id::text = roadmap_weeks.roadmap_id::text
-      and r.user_id::text = auth.uid()::text
+    select 1 from public.roadmaps r
+    where r.id = roadmap_weeks.roadmap_id
+      and r.user_id = auth.uid()::text
   )
 );
 
@@ -398,9 +221,9 @@ using (
   exists (
     select 1
     from public.roadmap_weeks w
-    join public.roadmaps r on r.id::text = w.roadmap_id::text
-    where w.id::text = week_resources.week_id::text
-      and (r.user_id::text = auth.uid()::text or r.is_public = true)
+    join public.roadmaps r on r.id = w.roadmap_id
+    where w.id = week_resources.week_id
+      and (r.user_id = auth.uid()::text or r.is_public = true)
   )
 );
 
@@ -412,9 +235,9 @@ with check (
   exists (
     select 1
     from public.roadmap_weeks w
-    join public.roadmaps r on r.id::text = w.roadmap_id::text
-    where w.id::text = week_resources.week_id::text
-      and r.user_id::text = auth.uid()::text
+    join public.roadmaps r on r.id = w.roadmap_id
+    where w.id = week_resources.week_id
+      and r.user_id = auth.uid()::text
   )
 );
 
@@ -447,10 +270,9 @@ for select
 to authenticated
 using (
   exists (
-    select 1
-    from public.roadmaps r
-    where r.id::text = roadmap_global_resources.roadmap_id::text
-      and (r.user_id::text = auth.uid()::text or r.is_public = true)
+    select 1 from public.roadmaps r
+    where r.id = roadmap_global_resources.roadmap_id
+      and (r.user_id = auth.uid()::text or r.is_public = true)
   )
 );
 
@@ -460,10 +282,9 @@ for insert
 to authenticated
 with check (
   exists (
-    select 1
-    from public.roadmaps r
-    where r.id::text = roadmap_global_resources.roadmap_id::text
-      and r.user_id::text = auth.uid()::text
+    select 1 from public.roadmaps r
+    where r.id = roadmap_global_resources.roadmap_id
+      and r.user_id = auth.uid()::text
   )
 );
 
@@ -502,13 +323,13 @@ create policy quiz_results_select_own
 on public.quiz_results
 for select
 to authenticated
-using (user_id::text = auth.uid()::text);
+using (user_id = auth.uid()::text);
 
 create policy quiz_results_insert_own
 on public.quiz_results
 for insert
 to authenticated
-with check (user_id::text = auth.uid()::text);
+with check (user_id = auth.uid()::text);
 
 -- =========================
 -- RESUME STORAGE BUCKET + POLICIES
@@ -569,3 +390,5 @@ select policyname, schemaname, tablename
 from pg_policies
 where schemaname in ('public', 'storage')
 order by schemaname, tablename, policyname;
+
+notify pgrst, 'reload schema';

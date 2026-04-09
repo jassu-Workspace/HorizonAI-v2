@@ -1,17 +1,19 @@
 # Horizon AI
 
-<p align="center">
-  <strong>Your Learning and Career Navigation Engine</strong><br/>
-  Personalized roadmaps, adaptive assessments, resume intelligence, and role-based skill insights.
-</p>
+<div align="center">
 
-<p align="center">
-  <img alt="React" src="https://img.shields.io/badge/Frontend-React%2018-61DAFB?style=for-the-badge&logo=react&logoColor=black" />
-  <img alt="TypeScript" src="https://img.shields.io/badge/Language-TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white" />
-  <img alt="Vite" src="https://img.shields.io/badge/Build-Vite-646CFF?style=for-the-badge&logo=vite&logoColor=white" />
-  <img alt="Supabase" src="https://img.shields.io/badge/Backend-Supabase-3ECF8E?style=for-the-badge&logo=supabase&logoColor=black" />
-  <img alt="NVIDIA" src="https://img.shields.io/badge/AI-NVIDIA%20NIM-76B900?style=for-the-badge&logo=nvidia&logoColor=black" />
-</p>
+> Transform Learning into Career Success
+> The world's most intelligent personal learning companion
+
+![Status](https://img.shields.io/badge/Status-🟢%20Production%20Ready-brightgreen?style=for-the-badge&labelColor=1a1a1a&color=00d084)
+![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge&labelColor=1a1a1a)
+![Version](https://img.shields.io/badge/Version-2.0-purple?style=for-the-badge&labelColor=1a1a1a)
+![TypeScript](https://img.shields.io/badge/Language-TypeScript-3178C6?style=for-the-badge&labelColor=1a1a1a&logo=typescript)
+![React](https://img.shields.io/badge/Frontend-React%2018-61DAFB?style=for-the-badge&labelColor=1a1a1a&logo=react)
+
+**[Features](#features) • [Quick Start](#quick-start) • [Architecture](#system-architecture) • [Security](#security-notes) • [Deployment](#deployment)**
+
+</div>
 
 ---
 
@@ -27,7 +29,7 @@ It delivers a complete flow from onboarding to roadmap execution, weekly validat
 
 ---
 
-## What Makes It Different
+## Features
 
 - Deep profile-aware personalization using academic stage, stream, branch, specialization, learning style, focus area, and performance history.
 - Intelligent roadmap generation with practical, week-by-week milestones and resource curation.
@@ -70,8 +72,8 @@ flowchart LR
 
 ### Runtime Model
 
-- Frontend: React + TypeScript + Vite + Tailwind.
-- AI Access: Server-side proxy using OpenAI SDK against NVIDIA endpoint.
+- Frontend: React + TypeScript + Vite + Tailwind CDN + custom CSS.
+- AI Access: Server-side proxy using OpenAI SDK against the NVIDIA Build API.
 - Data/Auth/Storage: Supabase.
 - Resume Parsing: Client-side PDF extraction using pdf.js.
 
@@ -107,15 +109,20 @@ flowchart LR
 
 ```text
 Final Horizon AI/
+  api/
+    chat.ts
+    health.ts
   api-server.ts
   App.tsx
+  index.html
   index.tsx
   components/
   services/
     geminiService.ts
     supabaseService.ts
   supabase_schema.sql
-  .env
+  types.ts
+  vercel.json
   package.json
 ```
 
@@ -125,13 +132,11 @@ Final Horizon AI/
 
 ### 1) Use the Correct Folder
 
-Run this project from:
+Run commands from the project root that contains `package.json`:
 
 ```powershell
-cd "D:\Projects\nvidia\Final Horizon AI"
+cd "<your-clone-folder>\Final Horizon AI"
 ```
-
-Do not run from folders like `nvidia - Copy` if they do not contain `package.json`.
 
 ### 2) Install Dependencies
 
@@ -141,13 +146,13 @@ npm install
 
 ### 3) Configure Environment
 
-Create or update `.env`:
+Create a `.env` file in the project root:
 
 ```env
 # Frontend
-VITE_API_PROXY_BASE=http://localhost:3004/api
 VITE_SUPABASE_URL=YOUR_SUPABASE_URL
 VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
+VITE_API_PROXY_BASE=http://localhost:3004/api
 
 # Backend
 NVIDIA_API_BASE=https://integrate.api.nvidia.com/v1
@@ -158,13 +163,30 @@ NVIDIA_API_KEY_1=YOUR_KEY_FOR_GLM
 NVIDIA_API_KEY_2=YOUR_KEY_FOR_LLAMA
 NVIDIA_API_KEY_3=YOUR_KEY_FOR_MISTRAL
 
-# Routing behavior
+# Optional fallback key
+NVIDIA_API_KEY=YOUR_FALLBACK_KEY
+
+# Optional routing behavior
 NVIDIA_KEY_RATE_LIMIT_COOLDOWN_MS=65000
 NVIDIA_KEY_ERROR_COOLDOWN_MS=8000
 NVIDIA_KEY_MAX_RETRIES=6
 ```
 
-### 4) Start Development
+### 4) Set Up Supabase
+
+Run [supabase_schema.sql](supabase_schema.sql) in the Supabase SQL Editor as `postgres`.
+
+This file creates and secures the data model used by the app:
+
+- `profiles`
+- `roadmaps`
+- `roadmap_weeks`
+- `week_resources`
+- `roadmap_global_resources`
+- `quiz_results`
+- the private `resumes` storage bucket and its RLS policies
+
+### 5) Start Development
 
 ```powershell
 npm run dev
@@ -174,6 +196,14 @@ Expected local endpoints:
 
 - Frontend: `http://localhost:3000`
 - API Proxy: `http://localhost:3004`
+- Health Check: `http://localhost:3004/health`
+
+If you want to run the two processes separately:
+
+```powershell
+npm run dev:frontend
+npm run dev:backend
+```
 
 ### 5) Production Vercel Pipeline (Industry Ready)
 
@@ -200,23 +230,15 @@ Use `.env.example` as the source of truth for all required Vercel environment va
 
 ---
 
-## Supabase Setup
+## Authentication
 
-Use the provided SQL bootstrap:
+Horizon AI currently supports:
 
-1. Open Supabase SQL Editor.
-2. Run `supabase_schema.sql` as role `postgres`.
-3. Confirm policies and tables are created.
+- Email/password sign-up and sign-in.
+- Google OAuth via Supabase.
+- Guest access for exploring the UI without cloud save.
 
-This file maps schema and policies to current code usage including:
-
-- `profiles`
-- `roadmaps`
-- `roadmap_weeks`
-- `week_resources`
-- `roadmap_global_resources`
-- `quiz_results`
-- `storage.objects` resume policies
+If Supabase is not configured, the app shows a setup notice and still allows guest access. Session persistence and refresh are handled by Supabase Auth.
 
 ---
 
@@ -224,20 +246,64 @@ This file maps schema and policies to current code usage including:
 
 Current intended mapping:
 
-1. Key 1 -> `glm-4.7`
+1. Key 1 -> `glm-4.7` / `z-ai/glm4.7`
 2. Key 2 -> `meta/llama-3.1-405b-instruct`
 3. Key 3 -> `mistralai/mistral-7b-instruct-v0.2`
 
-The backend enforces model validation and applies key-slot routing policy.
+The backend enforces model validation, round-robin key selection, cooldown windows, and a fallback from GLM 404s to the Llama route when provider availability changes.
 
 ---
 
 ## Security Notes
 
 - Never commit `.env` with real keys.
-- Keep Supabase storage bucket `resumes` private.
+- Keep the Supabase storage bucket `resumes` private.
 - Use RLS policies for both profile and storage objects.
 - Use signed URLs for resume reads.
+- Keep NVIDIA API keys on the server or in deployment secrets, never in the browser bundle.
+- The frontend should always talk to NVIDIA through the proxy or deployed API route.
+
+---
+
+## Deployment
+
+### Vercel
+
+The repo includes [api/chat.ts](api/chat.ts), [api/health.ts](api/health.ts), and [vercel.json](vercel.json) for Vercel deployments.
+
+Recommended steps:
+
+1. Add the environment variables in your Vercel project settings.
+2. Run `npm run build`.
+3. Deploy the project.
+4. Verify `/api/health` responds and auth works.
+
+### Other Hosts
+
+If you are not using Vercel, host the built frontend and run [api-server.ts](api-server.ts) as a separate Node process.
+
+For a production preview of the frontend build:
+
+```powershell
+npm run build
+npm run preview
+```
+
+---
+
+## Useful Files
+
+- [App.tsx](App.tsx) - main app shell and routing.
+- [api-server.ts](api-server.ts) - local Express proxy for NVIDIA requests.
+- [api/chat.ts](api/chat.ts) - deployed chat route.
+- [api/health.ts](api/health.ts) - deployed health route.
+- [components/Auth.tsx](components/Auth.tsx) - email, Google, and guest access UI.
+- [components/Dashboard.tsx](components/Dashboard.tsx) - profile, roadmap, and resume workflows.
+- [index.html](index.html) - Tailwind CDN, fonts, pdf.js, and client bootstrap.
+- [services/geminiService.ts](services/geminiService.ts) - AI request and roadmap logic.
+- [services/supabaseService.ts](services/supabaseService.ts) - auth, database, and storage helpers.
+- [supabase_schema.sql](supabase_schema.sql) - database schema and RLS setup.
+- [types.ts](types.ts) - shared app types.
 
 ---
 
@@ -245,10 +311,10 @@ The backend enforces model validation and applies key-slot routing policy.
 
 ### npm ENOENT package.json
 
-You are in the wrong directory. Move to:
+You are in the wrong directory. Move to the project root that contains `package.json`.
 
 ```powershell
-cd "D:\Projects\nvidia\Final Horizon AI"
+cd "<your-clone-folder>\Final Horizon AI"
 ```
 
 ### Port already in use (3000/3004)
@@ -272,6 +338,7 @@ foreach ($p in $ports) {
 - Check `profiles` RLS policies and `storage.objects` policies.
 - Verify bucket name is exactly `resumes`.
 - Confirm user is logged in before upload.
+- If you are on Vercel, confirm the deployed `/api/health` route works and the storage secrets are set.
 
 ---
 
@@ -292,4 +359,4 @@ Built by Team Portgas D Ace for Smart India Hackathon.
 
 ## License
 
-Add your preferred license here, for example MIT or Apache-2.0.
+MIT License. See [LICENSE](LICENSE) for details.

@@ -21,22 +21,36 @@ const AIToolCard: React.FC<{
     color: string; 
     onClick: (e: React.MouseEvent) => void;
     disabled?: boolean;
-}> = ({ icon, label, color, onClick, disabled }) => (
-    <button 
-        onClick={onClick} 
-        disabled={disabled}
-        className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all duration-300 
-        ${disabled 
-            ? 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 opacity-60 cursor-not-allowed grayscale' 
-            : `bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-${color}-400 dark:hover:border-${color}-400 hover:shadow-md hover:-translate-y-1 group`
-        }`}
-    >
-        <div className={`text-2xl mb-2 transition-colors ${disabled ? 'text-slate-400' : `text-${color}-500 group-hover:text-${color}-600`}`}>
-            <ion-icon name={icon}></ion-icon>
-        </div>
-        <span className={`text-xs font-semibold text-center ${disabled ? 'text-slate-400' : 'text-slate-700 dark:text-slate-300'}`}>{label}</span>
-    </button>
-);
+}> = ({ icon, label, color, onClick, disabled }) => {
+    const colorClasses: Record<string, { border: string; icon: string }> = {
+        green: { border: 'hover:border-green-400 dark:hover:border-green-400', icon: 'text-green-500 group-hover:text-green-600' },
+        amber: { border: 'hover:border-amber-400 dark:hover:border-amber-400', icon: 'text-amber-500 group-hover:text-amber-600' },
+        indigo: { border: 'hover:border-indigo-400 dark:hover:border-indigo-400', icon: 'text-indigo-500 group-hover:text-indigo-600' },
+        rose: { border: 'hover:border-rose-400 dark:hover:border-rose-400', icon: 'text-rose-500 group-hover:text-rose-600' },
+        teal: { border: 'hover:border-teal-400 dark:hover:border-teal-400', icon: 'text-teal-500 group-hover:text-teal-600' },
+        cyan: { border: 'hover:border-cyan-400 dark:hover:border-cyan-400', icon: 'text-cyan-500 group-hover:text-cyan-600' },
+        purple: { border: 'hover:border-purple-400 dark:hover:border-purple-400', icon: 'text-purple-500 group-hover:text-purple-600' },
+        orange: { border: 'hover:border-orange-400 dark:hover:border-orange-400', icon: 'text-orange-500 group-hover:text-orange-600' },
+    };
+
+    const palette = colorClasses[color] || colorClasses.cyan;
+
+    return (
+        <button
+            onClick={onClick}
+            disabled={disabled}
+            className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all duration-300 ${disabled
+                ? 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 opacity-60 cursor-not-allowed grayscale'
+                : `bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 ${palette.border} hover:shadow-md hover:-translate-y-1 group`
+                }`}
+        >
+            <div className={`text-2xl mb-2 transition-colors ${disabled ? 'text-slate-400' : palette.icon}`}>
+                <ion-icon name={icon}></ion-icon>
+            </div>
+            <span className={`text-xs font-semibold text-center ${disabled ? 'text-slate-400' : 'text-slate-700 dark:text-slate-300'}`}>{label}</span>
+        </button>
+    );
+};
 
 const ResourceLink: React.FC<{ resource: { title: string, searchQuery: string } }> = ({ resource }) => (
     <a 

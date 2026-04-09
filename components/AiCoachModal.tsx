@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ChatMessage } from '../types';
 
 interface AiCoachModalProps {
@@ -10,9 +10,17 @@ interface AiCoachModalProps {
 
 const AiCoachModal: React.FC<AiCoachModalProps> = ({ history, onSend, onClose, title }) => {
     const [input, setInput] = useState('');
+    const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => {
-        document.getElementById('ai-coach-messages-end')?.scrollIntoView({ behavior: "smooth" });
+        if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+        scrollTimerRef.current = setTimeout(() => {
+            document.getElementById('ai-coach-messages-end')?.scrollIntoView({ behavior: "smooth" });
+        }, 80);
+
+        return () => {
+            if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+        };
     }, [history]);
 
     const handleSubmit = (e: React.FormEvent) => {

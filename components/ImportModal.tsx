@@ -18,16 +18,27 @@ const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImportSuccess }) =
     const [previewData, setPreviewData] = useState<RoadmapData | null>(null);
     const scannerRef = useRef<any>(null);
 
+    const stopScanner = async () => {
+        if (scannerRef.current) {
+            try {
+                await scannerRef.current.stop();
+            } catch (err: any) {
+                console.error("Failed to stop scanner", err);
+            } finally {
+                scannerRef.current = null;
+            }
+        }
+    };
+
     // Cleanup scanner on unmount
     useEffect(() => {
         return () => {
-            if (scannerRef.current) {
-                scannerRef.current.stop().catch((err: any) => console.error("Failed to stop scanner", err));
-            }
+            stopScanner();
         };
     }, []);
 
-    const startScanner = () => {
+    const startScanner = async () => {
+        await stopScanner();
         setMode('scan');
         setError('');
         // Give DOM time to render the ID inside the modal
@@ -40,7 +51,7 @@ const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImportSuccess }) =
                     { fps: 10, qrbox: { width: 250, height: 250 } },
                     (decodedText: string) => {
                         // Success
-                        html5QrCode.stop();
+                        stopScanner();
                         handleUrlSubmit(decodedText);
                     },
                     (errorMessage: string) => {
@@ -116,7 +127,10 @@ const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImportSuccess }) =
                 <>
                     <div className="flex gap-2 mb-6 p-1 bg-slate-100 rounded-lg">
                         <button 
-                            onClick={() => setMode('link')}
+                            onClick={() => {
+                                stopScanner();
+                                setMode('link');
+                            }}
                             className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${mode === 'link' ? 'bg-white shadow text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}
                         >
                             Paste Link

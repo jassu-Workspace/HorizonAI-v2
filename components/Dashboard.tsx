@@ -206,7 +206,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectRoadmap, onNewRoadmap, on
                     {/* Resume Section */}
                     <div className="grid grid-cols-2 gap-4">
                         <div className="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm border border-slate-100 dark:border-slate-700 flex flex-col justify-between items-start hover:shadow-md transition-shadow">
-                            <input type="file" ref={resumeInputRef} onChange={handleResumeUpdate} className="hidden" accept=".pdf" />
+                            <input type="file" ref={resumeInputRef} onChange={handleResumeUpdate} className="hidden" accept=".pdf" aria-label="Upload resume PDF" title="Upload resume PDF" />
                             <div className="w-full">
                                 <div className="bg-blue-50 dark:bg-blue-900/30 p-2.5 rounded-xl w-fit text-blue-600 dark:text-blue-400 mb-3">
                                     <ion-icon name="document-text-outline" className="text-xl"></ion-icon>
@@ -239,7 +239,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectRoadmap, onNewRoadmap, on
                 {/* RIGHT COLUMN: Roadmaps */}
                 <div className="w-full md:w-2/3 space-y-8">
                      <div>
-                        <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-4 flex items-center gap-2" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+                        <h2 className="roadmap-title-font text-2xl font-bold text-slate-900 dark:text-white mb-4 flex items-center gap-2">
                             <ion-icon name="compass" className="text-blue-600 dark:text-blue-400"></ion-icon>
                             Active Journey
                         </h2>
@@ -257,9 +257,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectRoadmap, onNewRoadmap, on
                                         <span>Course Progress</span>
                                         <span>{Math.round(activeRoadmap.progress || 0)}%</span>
                                     </div>
-                                    <div className="w-full bg-slate-100 dark:bg-slate-700 rounded-full h-3 mb-6">
-                                        <div className="bg-gradient-to-r from-blue-500 to-indigo-500 h-3 rounded-full transition-all duration-1000 ease-out" style={{ width: `${activeRoadmap.progress || 0}%` }}></div>
-                                    </div>
+                                    <progress
+                                        className="dashboard-progress-bar dashboard-progress-bar-active mb-6"
+                                        value={activeRoadmap.progress || 0}
+                                        max={100}
+                                    />
                                     <div className="flex justify-end">
                                         <button onClick={() => onSelectRoadmap(activeRoadmap)} className="dynamic-button !py-2 !px-6 text-sm flex items-center gap-2">
                                             Continue Learning <ion-icon name="arrow-forward"></ion-icon>
@@ -303,9 +305,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectRoadmap, onNewRoadmap, on
                                                 <span>{map.roadmap.length} Weeks</span>
                                                 <span className={map.status === 'completed' ? 'text-green-600 dark:text-green-400' : 'text-blue-600 dark:text-blue-400'}>{Math.round(map.progress || 0)}%</span>
                                             </div>
-                                            <div className="w-full bg-slate-100 dark:bg-slate-700 rounded-full h-1.5">
-                                                <div className={`h-1.5 rounded-full ${map.status === 'completed' ? 'bg-green-500' : 'bg-blue-500'}`} style={{ width: `${map.progress || 0}%` }}></div>
-                                            </div>
+                                            <progress
+                                                className={`dashboard-progress-bar dashboard-progress-bar-saved ${map.status === 'completed' ? 'dashboard-progress-complete' : 'dashboard-progress-active'}`}
+                                                value={map.progress || 0}
+                                                max={100}
+                                            />
                                         </div>
                                         <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-700 flex justify-end">
                                             <button onClick={(e) => map.id && initiateActivation(e, map.id)} className="text-xs font-bold text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 transition-colors">

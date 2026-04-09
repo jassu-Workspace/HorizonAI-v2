@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { supabase, isSupabaseConfigured } from '../services/supabaseService';
 
 interface AuthProps {
@@ -12,6 +12,21 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const [infoMessage, setInfoMessage] = useState('');
+
+    useEffect(() => {
+        const autoResolveSession = async () => {
+            if (!isSupabaseConfigured) {
+                return;
+            }
+
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session) {
+                onAuthSuccess();
+            }
+        };
+
+        void autoResolveSession();
+    }, []);
 
     const handleAuth = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -94,7 +109,7 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
     return (
         <div className="flex justify-center items-center min-h-[50vh]">
             <div className="glass-card p-8 w-full max-w-md">
-                <h2 className="text-3xl font-bold text-slate-900 dark:text-white mb-6 text-center" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+                <h2 className="roadmap-title-font text-3xl font-bold text-slate-900 dark:text-white mb-6 text-center">
                     {isLogin ? 'Welcome Back' : 'Start Your Journey'}
                 </h2>
                 <form onSubmit={handleAuth} className="space-y-4">
@@ -103,6 +118,8 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
                         <input 
                             type="email" 
                             required
+                            placeholder="name@example.com"
+                            title="Email address"
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
                             className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-slate-900 dark:text-white"
@@ -113,6 +130,8 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
                         <input 
                             type="password" 
                             required
+                            placeholder="Enter your password"
+                            title="Password"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-slate-900 dark:text-white"
