@@ -11,6 +11,8 @@
     "dev": "concurrently \"vite\" \"tsx api-server.ts\"",
     "dev:frontend": "vite",
     "dev:backend": "tsx api-server.ts",
+    "start": "npm run build && tsx server.ts",
+    "start:prod": "tsx server.ts",
     "check:vercel-functions": "node scripts/check-vercel-functions.mjs",
     "typecheck": "tsc --noEmit",
     "build": "vite build",

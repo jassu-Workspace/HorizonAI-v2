@@ -138,6 +138,19 @@ export interface AssessmentResult {
 export interface RoadmapGenerationOptions {
     background?: boolean;
     onError?: (message: string) => void;
+    scoreData?: {
+        score: number;
+        maxScore: number;
+        percentage: number;
+        level: string;
+        breakdown?: {
+            correctCount: number;
+            wrongCount: number;
+            skippedCount: number;
+            selfRatingScore: number;
+            regularScore: number;
+        };
+    };
 }
 
 export interface Project {

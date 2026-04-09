@@ -13,10 +13,10 @@ import { RapidQuestion } from '../types';
 
 export const ASSESSMENT_CONFIG = {
   RAPID_ASSESSMENT: {
-    MIN_QUESTIONS: 8,
-    TARGET_QUESTIONS: 10,
-    TIMEOUT_MS: 300000, // 5 minutes total
-    MODEL: "mistralai/mistral-7b-instruct-v0.2",
+    MIN_QUESTIONS: 5,       // Lowered from 8 — accept partial valid responses
+    TARGET_QUESTIONS: 8,    // Lowered from 10 — faster, fewer truncation failures
+    TIMEOUT_MS: 50000,      // 50s — stays within Vercel's 60s maxDuration limit
+    MODEL: "meta/llama-3.1-405b-instruct", // Changed from Mistral — Llama supports json_object format
     TEMPERATURE: 0.2,
     TOP_P: 0.6,
   },
@@ -148,14 +148,21 @@ export const validateRapidQuestion = (q: unknown, index: number): ValidationResu
       issue: 'Must be non-empty string',
     });
   } else if (
-    question.correctAnswer !== SELF_RATING_SENTINEL &&
-    !question.options?.includes(question.correctAnswer)
+    question.correctAnswer.trim() !== SELF_RATING_SENTINEL
   ) {
-    errors.push({
-      field: `question[${index}].correctAnswer`,
-      issue: 'Answer must match one of the options exactly',
-      value: question.correctAnswer,
-    });
+    // Normalize both the answer and all options by trimming whitespace before comparison
+    // AI models sometimes return slight whitespace differences between options and correctAnswer
+    const normalizedAnswer = question.correctAnswer.trim().toLowerCase();
+    const normalizedOptions = (question.options as unknown[] || []).map((o: unknown) =>
+      String(o || '').trim().toLowerCase()
+    );
+    if (!normalizedOptions.includes(normalizedAnswer)) {
+      errors.push({
+        field: `question[${index}].correctAnswer`,
+        issue: 'Answer must match one of the options (case/whitespace insensitive)',
+        value: question.correctAnswer,
+      });
+    }
   }
 
   return {

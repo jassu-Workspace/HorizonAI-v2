@@ -59,7 +59,9 @@ const callNvidiaAPI = async (
     temperature: number = 0.3,
   topP: number = 0.7,
   options?: CallApiOptions,
-): Promise<string> => {   
+): Promise<string> => {
+  console.log('[callNvidiaAPI] Starting API call', { model, timeoutMs: options?.timeoutMs });
+
   if (prompt.length > 12000) {
     throw new Error('Prompt is too large. Please reduce input size.');
   }
@@ -71,6 +73,7 @@ const callNvidiaAPI = async (
   }
 
     const requestToBase = async (apiBase: string): Promise<string> => {
+      console.log('[callNvidiaAPI] Attempting request to', apiBase);
       const controller = new AbortController();
       const requestedTimeout = Number(options?.timeoutMs || 30000);
       const requestDeadlineMs = Math.max(10000, Math.min(requestedTimeout, 60000));
@@ -149,8 +152,20 @@ const callNvidiaAPI = async (
         throw err;
       }
 
-      const data = await response.json();
+      let data;
+      try {
+        console.log('[callNvidiaAPI] Parsing response JSON...');
+        data = await response.json();
+        console.log('[callNvidiaAPI] Response JSON parsed successfully');
+      } catch (parseErr: any) {
+        console.error('[callNvidiaAPI] Failed to parse response JSON', parseErr);
+        const err: ApiRequestError = new Error('Failed to parse AI response. The service may be temporarily unavailable.');
+        err.code = 'RESPONSE_PARSE_ERROR';
+        throw err;
+      }
+
       const content = data.choices?.[0]?.message?.content || '';
+      console.log('[callNvidiaAPI] Extracted content length:', content.length);
 
       if (!content) {
         throw new Error('Empty response from AI model. Please try again.');
@@ -164,7 +179,10 @@ const callNvidiaAPI = async (
 
     while (retries > 0) {
         try {
-        return await Promise.any(API_BASE_CANDIDATES.map(apiBase => requestToBase(apiBase)));
+        console.log('[callNvidiaAPI] Using Promise.any with', API_BASE_CANDIDATES.length, 'API bases');
+        const result = await Promise.any(API_BASE_CANDIDATES.map(apiBase => requestToBase(apiBase)));
+        console.log('[callNvidiaAPI] API call succeeded, returning:', result.substring(0, 100) + '...');
+        return result;
         } catch (error: any) {
         const aggregateErrors = Array.isArray(error?.errors) ? error.errors : [error];
         const firstError = aggregateErrors[0] || error;

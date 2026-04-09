@@ -20,8 +20,8 @@ interface ConfigureRoadmapProps {
   determinedSkillLevel?: 'Beginner' | 'Intermediate' | 'Expert'; // Legacy
 }
 
-const ASSESSMENT_LOAD_TIMEOUT_MS = 60000; // 60 seconds hard timeout
-const ASSESSMENT_DURATION_SECONDS = 420; // 7 minutes
+// No hard load timeout — let the browser/fetch handle natural abort
+// No visible assessment duration timer (removed per user requirement)
 
 const ConfigureRoadmap: React.FC<ConfigureRoadmapProps & { interestDomain: string }> = ({
   skillName,
@@ -36,40 +36,21 @@ const ConfigureRoadmap: React.FC<ConfigureRoadmapProps & { interestDomain: strin
   const [selectedAnswers, setSelectedAnswers] = useState<(string | null)[]>([]);
   const [isCompleted, setIsCompleted] = useState(false);
 
-  const [timer, setTimer] = useState(ASSESSMENT_DURATION_SECONDS);
   const [isRoadmapGenerating, setIsRoadmapGenerating] = useState(false);
   const [roadmapGenerationError, setRoadmapGenerationError] = useState('');
 
   const activeLoadRef = useRef(0);
   const mountedRef = useRef(true);
-  const loadTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     return () => {
       mountedRef.current = false;
-      if (loadTimeoutRef.current) {
-        clearTimeout(loadTimeoutRef.current);
-      }
     };
   }, []);
 
   useEffect(() => {
     loadAssessment();
   }, [skillName, interestDomain]);
-
-  useEffect(() => {
-    let interval: NodeJS.Timeout | null = null;
-    if (!loading && !isCompleted && timer > 0 && questions.length > 0) {
-      interval = setInterval(() => {
-        setTimer((prev) => prev - 1);
-      }, 1000);
-    } else if (timer === 0 && !isCompleted && questions.length > 0) {
-      finishAssessment();
-    }
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [loading, isCompleted, timer, questions.length]);
 
   const loadAssessment = async () => {
     const loadId = activeLoadRef.current + 1;
@@ -79,13 +60,7 @@ const ConfigureRoadmap: React.FC<ConfigureRoadmapProps & { interestDomain: strin
     setRoadmapGenerationError('');
     setIsRoadmapGenerating(false);
 
-    // Set hard timeout for assessment load
-    loadTimeoutRef.current = setTimeout(() => {
-      if (loadId === activeLoadRef.current && mountedRef.current) {
-        setError('Assessment generation took too long. Please try again.');
-        setLoading(false);
-      }
-    }, ASSESSMENT_LOAD_TIMEOUT_MS);
+    console.log('[ConfigureRoadmap] Starting assessment load', { skillName, interestDomain, loadId });
 
     try {
       // Validate inputs before API call
@@ -96,10 +71,13 @@ const ConfigureRoadmap: React.FC<ConfigureRoadmapProps & { interestDomain: strin
         throw new Error('Interest domain is required');
       }
 
+      console.log('[ConfigureRoadmap] Calling getRapidAssessment...');
       // Load assessment from service
       const quiz = await getRapidAssessment(skillName, interestDomain);
+      console.log('[ConfigureRoadmap] getRapidAssessment returned', { questionsCount: quiz?.length });
 
       if (loadId !== activeLoadRef.current || !mountedRef.current) {
+        console.log('[ConfigureRoadmap] Load was superseded or component unmounted');
         return; // Latest request changed or component unmounted
       }
 
@@ -127,11 +105,11 @@ const ConfigureRoadmap: React.FC<ConfigureRoadmapProps & { interestDomain: strin
       }
 
       // All validations passed, set state
+      console.log('[ConfigureRoadmap] Assessment validated successfully, updating state');
       setQuestions(quiz);
       setSelectedAnswers(new Array(quiz.length).fill(null));
       setCurrentQuestionIndex(0);
       setIsCompleted(false);
-      setTimer(ASSESSMENT_DURATION_SECONDS);
 
       logAssessmentError('[Assessment] Loaded successfully', null, {
         skillName,
@@ -140,6 +118,8 @@ const ConfigureRoadmap: React.FC<ConfigureRoadmapProps & { interestDomain: strin
     } catch (e: unknown) {
       const message =
         e instanceof Error ? e.message : typeof e === 'string' ? e : 'Failed to load assessment';
+
+      console.error('[ConfigureRoadmap] Assessment load failed', { message, error: e });
 
       logAssessmentError('loadAssessment', e, {
         skillName,
@@ -150,11 +130,8 @@ const ConfigureRoadmap: React.FC<ConfigureRoadmapProps & { interestDomain: strin
         setError(message || 'Failed to generate assessment. Please try again.');
       }
     } finally {
-      if (loadTimeoutRef.current) {
-        clearTimeout(loadTimeoutRef.current);
-        loadTimeoutRef.current = null;
-      }
       if (mountedRef.current && loadId === activeLoadRef.current) {
+        console.log('[ConfigureRoadmap] Setting loading to false');
         setLoading(false);
       }
     }
@@ -471,21 +448,14 @@ const ConfigureRoadmap: React.FC<ConfigureRoadmapProps & { interestDomain: strin
     <div className="glass-card p-6 md:p-10 max-w-3xl mx-auto mt-8 relative animate-fadeIn">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-6">
         <h2 className="text-xl font-bold text-slate-900">Rapid Assessment</h2>
-        <div
-          className={`font-mono font-bold text-lg px-3 py-1 rounded-lg ${
-            timer < 60 ? 'bg-red-100 text-red-600 animate-pulse' : 'bg-slate-100 text-slate-700'
-          }`}
-        >
-          {formatTime(timer)}
-        </div>
+        <span className="text-sm text-slate-500 font-medium">
+          Question {currentQuestionIndex + 1} of {questions.length}
+        </span>
       </div>
 
       <progress className="quiz-progress-bar mb-8" value={progress} max={100} />
 
       <div className="mb-8 min-h-[200px]">
-        <p className="text-sm text-slate-500 font-bold mb-2">
-          Question {currentQuestionIndex + 1} of {questions.length}
-        </p>
         <h3 className="text-xl font-bold text-slate-800 mb-6">{currentQ.question}</h3>
         <div className="space-y-3">
           {currentQ.options.map((opt, idx) => (

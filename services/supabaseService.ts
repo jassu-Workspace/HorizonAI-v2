@@ -48,6 +48,8 @@ if (!isSupabaseConfigured) {
             storageKey: 'horizon.auth.v1',
             persistSession: true,
             autoRefreshToken: true,
+            detectSessionInUrl: true,  // CRITICAL: reads OAuth tokens from URL on redirect
+            flowType: 'pkce',          // PKCE is more secure and required by Supabase OAuth
         }
     });
 }

@@ -140,6 +140,21 @@ const normalizeModelName = (model: string): string => {
 
 let roundRobinPointer = 0;
 
+/**
+ * Some models (e.g. Mistral) do not support response_format: json_object.
+ * Detect these errors so we can retry without the json format parameter.
+ */
+const canRetryWithoutJsonFormat = (error: any): boolean => {
+    const message = String(error?.message || '').toLowerCase();
+    return (
+        message.includes('response_format') ||
+        message.includes('json_object') ||
+        message.includes('invalid request') ||
+        message.includes('unsupported') ||
+        message.includes('not supported')
+    );
+};
+
 const isRateLimitError = (error: any): boolean => {
     const message = String(error?.message || '').toLowerCase();
     const status = Number(error?.status || error?.code || 0);
@@ -288,14 +303,30 @@ app.post('/api/chat', async (req, res) => {
 
             try {
                 const client = createClientForKey(keyState.key);
-                const completion = await client.chat.completions.create({
-                    model: requestedModel,
-                    messages,
-                    temperature: temperature || 0.3,
-                    top_p: top_p || 0.7,
-                    max_tokens: max_tokens || 4096,
-                    response_format: { type: 'json_object' }
-                });
+                let completion: any;
+                try {
+                    completion = await client.chat.completions.create({
+                        model: requestedModel,
+                        messages,
+                        temperature: temperature || 0.3,
+                        top_p: top_p || 0.7,
+                        max_tokens: max_tokens || 4096,
+                        response_format: { type: 'json_object' },
+                    });
+                } catch (jsonFmtError: any) {
+                    // Some models (e.g. Mistral) reject response_format: json_object — retry without it
+                    if (!canRetryWithoutJsonFormat(jsonFmtError)) {
+                        throw jsonFmtError;
+                    }
+                    console.warn('[' + requestId + '] ⚠️ Model rejected json_object format, retrying without it...');
+                    completion = await client.chat.completions.create({
+                        model: requestedModel,
+                        messages,
+                        temperature: temperature || 0.3,
+                        top_p: top_p || 0.7,
+                        max_tokens: max_tokens || 4096,
+                    });
+                }
 
                 keyState.failures = 0;
                 keyState.cooldownUntil = 0;

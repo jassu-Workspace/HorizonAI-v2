@@ -137,12 +137,19 @@ const App: React.FC = () => {
     const roadmapPollRef = useRef<number | null>(null);
     const roadmapRequestModeRef = useRef<'foreground' | 'background'>('foreground');
     const backgroundRoadmapErrorHandlerRef = useRef<((message: string) => void) | null>(null);
+    const roadmapPollErrorCountRef = useRef(0);
+
+    const isJobNotFoundError = (error: unknown): boolean => {
+        const message = String((error as any)?.message || '').toLowerCase();
+        return message.includes('not found') || message.includes('404');
+    };
 
     const stopRoadmapPolling = () => {
         if (roadmapPollRef.current) {
             window.clearInterval(roadmapPollRef.current);
             roadmapPollRef.current = null;
         }
+        roadmapPollErrorCountRef.current = 0;
     };
 
     const resolveRoadmapJob = async (jobId: string) => {
@@ -182,20 +189,37 @@ const App: React.FC = () => {
 
     const startRoadmapPolling = (jobId: string) => {
         stopRoadmapPolling();
+        roadmapPollErrorCountRef.current = 0;
         roadmapPollRef.current = window.setInterval(() => {
             resolveRoadmapJob(jobId).catch(() => {
-                // Keep polling through transient network failures.
+                // Keep polling through transient failures, but recover from stale/missing jobs.
+                roadmapPollErrorCountRef.current += 1;
+                if (roadmapPollErrorCountRef.current >= 3) {
+                    clearWorkflowState();
+                    stopRoadmapPolling();
+                    setActiveRoadmapJobId(null);
+                    setErrorMessage('We could not resume your previous roadmap request. Please start a new one.');
+                    navigate('/create');
+                }
             });
         }, 1000);
     };
 
     useEffect(() => {
         // Run auth check immediately — don't block behind the intro animation timer
+        const authTimeoutId = setTimeout(() => {
+            if (!authResolved) {
+                console.warn("[Auth] Timeout after 8s - forcing resolution");
+                setAuthResolved(true);
+                setIsAuthenticated(false);
+            }
+        }, 8000);
+
         checkSession();
 
         // Dismiss intro overlay after 2.5s
         const timer = setTimeout(() => setIsIntroVisible(false), 2500);
-        
+
         let savedTheme: string | null = null;
         try {
             savedTheme = localStorage.getItem('horizon-theme');
@@ -210,55 +234,35 @@ const App: React.FC = () => {
             }
         }
 
-        return () => clearTimeout(timer);
-    }, []);
-
-    // Safety net: if auth check hangs (network issue / Supabase timeout),
-    // force-resolve after 10s so the user never stays stuck on the loader.
-    useEffect(() => {
-        const safetyTimer = setTimeout(() => {
-            setAuthResolved(prev => {
-                if (!prev) {
-                    console.warn('[Horizon] Auth safety timeout — forcing session resolution');
-                    setIsAuthenticated(false);
-                    return true;
-                }
-                return prev;
-            });
-        }, 10000);
-        return () => clearTimeout(safetyTimer);
+        return () => {
+            clearTimeout(timer);
+            clearTimeout(authTimeoutId);
+        };
     }, []);
 
     useEffect(() => {
-        const { data: subscription } = supabase.auth.onAuthStateChange(async (event) => {
+        const { data: subscription } = supabase.auth.onAuthStateChange(async (event: string) => {
             console.log("[Auth] State change:", event);
-            
+
             if (event === 'SIGNED_OUT') {
-                console.log("[Auth] User signed out");
                 setIsAuthenticated(false);
                 setAuthResolved(true);
                 clearWorkflowState();
                 stopRoadmapPolling();
-                navigate('/login');
+                navigate('/login', { replace: true });
+                return;
             }
 
-            if (event === 'SIGNED_IN') {
-                console.log("[Auth] User signed in - running session check");
-                await checkSession();
-            }
-
-            if (event === 'TOKEN_REFRESHED') {
-                console.log("[Auth] Token refreshed");
+            if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
                 await checkSession();
             }
         });
 
         return () => {
-            if (subscription?.subscription) {
-                subscription.subscription.unsubscribe();
-            }
+            subscription?.subscription?.unsubscribe();
         };
-    }, [navigate, location.pathname]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [navigate]);
 
     useEffect(() => {
         return () => {
@@ -276,16 +280,46 @@ const App: React.FC = () => {
             const localJobId = persisted.jobId;
 
             if (localJobId) {
-                if (isCancelled) return;
-                setActiveRoadmapJobId(localJobId);
-                navigate('/loading');
-                startRoadmapPolling(localJobId);
                 try {
-                    await runJob(localJobId);
-                } catch {
-                    // Ignore if already running/completed, polling resolves final state.
+                    const existingJob = await getJob(localJobId);
+                    if (isCancelled) return;
+
+                    if (existingJob.status === 'completed') {
+                        const result = toRoadmapResult(existingJob);
+                        if (result) {
+                            setRoadmapData(result);
+                            setSelectedSkill(result.skill || selectedSkill);
+                            clearWorkflowState();
+                            setActiveRoadmapJobId(null);
+                            navigate('/roadmap');
+                            return;
+                        }
+                    }
+
+                    if (existingJob.status === 'failed') {
+                        clearWorkflowState();
+                        setActiveRoadmapJobId(null);
+                        setErrorMessage(existingJob.error || 'Your previous roadmap request failed. Please try again.');
+                        navigate('/error');
+                        return;
+                    }
+
+                    setActiveRoadmapJobId(localJobId);
+                    navigate('/loading');
+                    startRoadmapPolling(localJobId);
+                    await runJob(localJobId).catch(() => {
+                        // Ignore if already running/completed, polling resolves final state.
+                    });
+                    return;
+                } catch (error) {
+                    if (isJobNotFoundError(error)) {
+                        clearWorkflowState();
+                        setActiveRoadmapJobId(null);
+                        setErrorMessage('');
+                        navigate('/create');
+                        return;
+                    }
                 }
-                return;
             }
 
             try {
@@ -325,73 +359,117 @@ const App: React.FC = () => {
         setShowEmojis(prev => !prev);
     };
 
+    const sleep = (ms: number) => new Promise<void>((resolve) => {
+        window.setTimeout(resolve, ms);
+    });
+
+    const buildFallbackProfile = (authUser: any): UserProfile => ({
+        id: authUser.id,
+        role: 'user',
+        fullName: authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || 'User',
+        skills: '',
+        interests: '',
+        learningStyle: 'Balanced',
+        academicLevel: 'Graduation',
+        stream: 'General',
+        focusArea: 'General',
+    });
+
+    const resolveSessionWithRetry = async () => {
+        const currentPath = window.location.pathname;
+        const isOAuthCallback = currentPath === '/auth/callback';
+        const attempts = isOAuthCallback ? 6 : 1;
+        const authCode = new URLSearchParams(window.location.search).get('code');
+
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+            try {
+                // Timeout individual session attempts after 2 seconds
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Session check timeout')), 2000)
+                );
+
+                const sessionPromise = supabase.auth.getSession();
+
+                const { data: { session }, error } = await Promise.race([
+                    sessionPromise,
+                    timeoutPromise,
+                ]) as any;
+
+                if (error) {
+                    throw error;
+                }
+
+                if (session?.user) {
+                    return session;
+                }
+
+                if (isOAuthCallback && authCode && attempt === 0) {
+                    const { data, error: exchangeError } = await supabase.auth.exchangeCodeForSession(authCode);
+                    if (!exchangeError && data?.session?.user) {
+                        return data.session;
+                    }
+                }
+
+                if (attempt < attempts - 1) {
+                    await sleep(300);
+                }
+            } catch (err) {
+                console.warn(`[Auth] Session attempt ${attempt + 1} failed:`, err);
+                if (attempt === attempts - 1) {
+                    // Last attempt failed
+                    return null;
+                }
+            }
+        }
+
+        return null;
+    };
+
     const checkSession = async () => {
         try {
-            const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-            if (sessionError) {
-                console.error("[Auth] Session error:", sessionError);
-                throw sessionError;
-            }
-    
+            const session = await resolveSessionWithRetry();
+
             if (session && session.user) {
-                console.log("[Auth] Session found, checking profile for user:", session.user.id);
-                setIsAuthenticated(true);
+                const fallbackProfile = buildFallbackProfile(session.user);
                 let profile = await getCurrentProfile();
-                
+
                 if (!profile) {
-                    console.log("[Auth] No profile found - creating stub profile");
-                    const stubProfile: UserProfile = {
-                        id: session.user.id,
-                        role: 'user',
-                        fullName: session.user.email?.split('@')[0] || 'User',
-                        skills: '', interests: '',
-                        learningStyle: 'Balanced', academicLevel: 'Graduation', stream: 'General', focusArea: 'General'
-                    };
                     try {
-                        await saveProfileFromOnboarding(stubProfile);
-                        console.log("[Auth] Stub profile created successfully");
-                        const refetchedProfile = await getCurrentProfile();
-                        if (refetchedProfile) {
-                            profile = refetchedProfile;
-                        } else {
-                            throw new Error("Profile was created but could not be fetched back from database.");
-                        }
+                        await saveProfileFromOnboarding(fallbackProfile);
+                        profile = await getCurrentProfile();
                     } catch (profileError: any) {
-                        console.error("[Auth] CRITICAL - Profile creation failed:", profileError);
-                        setErrorMessage(`Account setup failed: ${profileError?.message || 'Please try again'}`);
-                        setIsAuthenticated(false);
-                        navigate('/login');
-                        setAuthResolved(true);
-                        return;
+                        console.error("[Auth] Profile bootstrap failed:", profileError);
+                        setErrorMessage(`Account setup warning: ${profileError?.message || 'Using temporary profile.'}`);
                     }
                 }
 
-                if (profile) {
-                    console.log("[Auth] Profile loaded, setting user context");
-                    setUserProfile(profile);
+                setUserProfile(profile || fallbackProfile);
+                setIsAuthenticated(true);
+                setErrorMessage('');
 
-                    if (location.pathname === '/login' || location.pathname === '/auth' || location.pathname === '/') {
-                        console.log("[Auth] Redirecting from auth page to /create");
-                        navigate('/create');
-                    }
-                } else {
-                    console.error("[Auth] Profile still null after all attempts");
-                    setIsAuthenticated(false);
-                    setErrorMessage("Could not load your profile. Please try logging in again.");
-                    navigate('/login');
+                const currentPath = window.location.pathname;
+                const redirectPaths = ['/login', '/auth', '/', '/auth/callback'];
+                if (redirectPaths.includes(currentPath)) {
+                    navigate('/create', { replace: true });
                 }
+
+                return;
             } else {
-                console.log("[Auth] No active session found");
                 setIsAuthenticated(false);
-                if (location.pathname !== '/login' && location.pathname !== '/auth') {
-                    navigate('/login');
+                const currentPath = window.location.pathname;
+                const protectedPaths = ['/create', '/suggestions', '/configure', '/roadmap', '/dashboard', '/loading'];
+                if (protectedPaths.some(p => currentPath.startsWith(p))) {
+                    navigate('/login', { replace: true });
                 }
             }
         } catch (error: any) {
-            console.error("[Auth] CRITICAL ERROR during session check:", error);
+            console.error("[Auth] Session restore failed:", error);
             setErrorMessage(error?.message || "Could not connect to your session. Please check your internet connection and try again.");
             setIsAuthenticated(false);
-            navigate('/login');
+            const currentPath = window.location.pathname;
+            if (currentPath !== '/auth/callback' && currentPath !== '/login') {
+                navigate('/login', { replace: true });
+            }
         } finally {
             setAuthResolved(true);
         }
@@ -399,7 +477,6 @@ const App: React.FC = () => {
 
     const handleAuthSuccess = async () => {
         await checkSession();
-        navigate('/create');
     };
 
     const handleOnboardingComplete = (profileData: Partial<UserProfile>) => {
@@ -789,6 +866,7 @@ const App: React.FC = () => {
                 <main className="flex-grow container mx-auto px-3 sm:px-4 pb-8">
                     <Routes>
                         <Route path="/login" element={isAuthenticated ? <Navigate to="/create" replace /> : <Auth onAuthSuccess={handleAuthSuccess} />} />
+                        <Route path="/auth/callback" element={isAuthenticated ? <Navigate to="/create" replace /> : <Navigate to="/login" replace />} />
                         <Route path="/auth" element={<Navigate to="/login" replace />} />
                         <Route path="/onboarding" element={<Navigate to="/create" replace />} />
                         <Route path="/dashboard" element={
@@ -865,7 +943,15 @@ const App: React.FC = () => {
                             </div>
                         } />
 
-                        <Route path="/" element={<Navigate to={isAuthenticated ? '/create' : '/login'} replace />} />
+                        {/* Root path: wait for auth resolution so OAuth callback session can be parsed before redirecting */}
+                        <Route path="/" element={
+                            !authResolved
+                                ? <div className="min-h-screen flex items-center justify-center"><Loader message="Loading..." /></div>
+                                : isAuthenticated
+                                    ? <Navigate to="/create" replace />
+                                    : <Navigate to="/login" replace />
+                        } />
+                        {/* Catch-all: unknown routes */}
                         <Route path="*" element={<Navigate to={isAuthenticated ? '/create' : '/login'} replace />} />
                     </Routes>
                 </main>

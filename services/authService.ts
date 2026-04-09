@@ -1,34 +1,33 @@
-import { createClient } from '@supabase/supabase-js';
-import type { Session, User, AuthError } from '@supabase/supabase-js';
+﻿import type { Session, User } from '@supabase/supabase-js';
+import { supabase } from './supabaseService';
 
-/**
- * SUPABASE AUTHENTICATION SERVICE
- * ================================
- * Production-ready authentication with Google OAuth and Email/Password
- * Provides secure session management and real-time auth state handling
- */
+export { supabase };
 
-// Initialize Supabase client
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const OAUTH_CALLBACK_PATH = '/auth/callback';
+const PASSWORD_RESET_PATH = '/auth/reset-password';
 
-if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-  throw new Error('Missing Supabase credentials. Check .env.local file.');
-}
+const isBrowser = typeof window !== 'undefined';
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: {
-    persistSession: true, // Persist session to localStorage
-    autoRefreshToken: true, // Auto-refresh expired tokens
-    detectSessionInUrl: true, // Detect session from URL (OAuth callback)
-    storage: typeof window !== 'undefined' ? window.localStorage : undefined,
-    flowType: 'pkce', // Use PKCE flow for better security
-  },
-});
+const appOrigin = (): string => {
+  return isBrowser ? window.location.origin : '';
+};
 
-// ============================================
-// TYPE DEFINITIONS
-// ============================================
+const absoluteUrl = (path: string): string => {
+  return `${appOrigin()}${path}`;
+};
+
+const toErrorMessage = (error: unknown, fallback: string): string => {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (typeof error === 'object' && error && 'message' in error) {
+    const maybeMessage = (error as { message?: unknown }).message;
+    if (typeof maybeMessage === 'string' && maybeMessage.trim().length > 0) {
+      return maybeMessage;
+    }
+  }
+  return fallback;
+};
 
 export interface AuthUser {
   id: string;
@@ -49,140 +48,150 @@ export interface AuthResponse {
   error?: string;
 }
 
-// ============================================
-// SESSION MANAGEMENT
-// ============================================
+const formatUser = (user: User): AuthUser => {
+  const provider = user.app_metadata?.provider;
+  const normalizedProvider = provider === 'google' || provider === 'email' ? provider : undefined;
 
-/**
- * Get current session
- * Returns null if not authenticated
- */
+  return {
+    id: user.id,
+    email: user.email || '',
+    user_metadata: {
+      full_name: user.user_metadata?.full_name,
+      avatar_url: user.user_metadata?.avatar_url,
+      provider: normalizedProvider,
+    },
+    created_at: user.created_at || new Date().toISOString(),
+    updated_at: user.updated_at || new Date().toISOString(),
+  };
+};
+
+const clearAuthStorage = (): void => {
+  if (!isBrowser) return;
+
+  try {
+    const keysToRemove = Object.keys(localStorage).filter((key) => {
+      return (
+        key.startsWith('sb-') ||
+        key.startsWith('horizon.auth') ||
+        key === 'horizon.activeRoadmapJobId' ||
+        key === 'horizon.workflowStep'
+      );
+    });
+
+    keysToRemove.forEach((key) => localStorage.removeItem(key));
+  } catch (error) {
+    console.warn('[Auth] Failed to clear auth storage:', error);
+  }
+};
+
 export const getCurrentSession = async (): Promise<Session | null> => {
   try {
-    const { data: { session }, error } = await supabase.auth.getSession();
+    const {
+      data: { session },
+      error,
+    } = await supabase.auth.getSession();
+
     if (error) {
       console.error('[Auth] Failed to get session:', error.message);
       return null;
     }
+
     return session;
   } catch (error) {
-    console.error('[Auth] Unexpected error getting session:', error);
+    console.error('[Auth] Unexpected session error:', error);
     return null;
   }
 };
 
-/**
- * Get current authenticated user
- * Returns null if not authenticated
- */
 export const getCurrentUser = async (): Promise<User | null> => {
   try {
-    const { data: { user }, error } = await supabase.auth.getUser();
+    const {
+      data: { user },
+      error,
+    } = await supabase.auth.getUser();
+
     if (error) {
       console.error('[Auth] Failed to get user:', error.message);
       return null;
     }
+
     return user;
   } catch (error) {
-    console.error('[Auth] Unexpected error getting user:', error);
+    console.error('[Auth] Unexpected user error:', error);
     return null;
   }
 };
 
-/**
- * Get JWT token from current session
- * Useful for API requests
- */
 export const getAccessToken = async (): Promise<string | null> => {
-  try {
-    const session = await getCurrentSession();
-    return session?.access_token || null;
-  } catch (error) {
-    console.error('[Auth] Failed to get access token:', error);
-    return null;
-  }
+  const session = await getCurrentSession();
+  return session?.access_token || null;
 };
 
-// ============================================
-// GOOGLE OAUTH AUTHENTICATION
-// ============================================
-
-/**
- * Sign in with Google OAuth
- * Opens Google login page and redirects to callback URL
- */
 export const signInWithGoogle = async (): Promise<AuthResponse> => {
   try {
-    const { data, error } = await supabase.auth.signInWithOAuth({
+    const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
-        queryParams: {
-          prompt: 'consent', // Always show consent screen
-        },
+        redirectTo: absoluteUrl(OAUTH_CALLBACK_PATH),
       },
     });
 
     if (error) {
       return {
         success: false,
-        error: error.message || 'Google sign-in failed',
+        error: toErrorMessage(error, 'Google sign-in failed.'),
       };
     }
 
     return { success: true };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error during Google sign-in';
-    return { success: false, error: message };
+    return {
+      success: false,
+      error: toErrorMessage(error, 'Google sign-in failed.'),
+    };
   }
 };
 
-// ============================================
-// EMAIL/PASSWORD AUTHENTICATION
-// ============================================
-
-/**
- * Sign up with email and password
- * Creates new user account with email/password authentication
- */
 export const signUpWithEmail = async (
   email: string,
   password: string,
   fullName?: string,
 ): Promise<AuthResponse> => {
   try {
-    // Validate inputs
-    if (!email || !email.includes('@')) {
-      return { success: false, error: 'Valid email is required' };
+    const trimmedEmail = email.trim();
+    const trimmedName = fullName?.trim();
+
+    if (!trimmedEmail || !trimmedEmail.includes('@')) {
+      return { success: false, error: 'Please enter a valid email address.' };
     }
 
     if (!password || password.length < 8) {
-      return { success: false, error: 'Password must be at least 8 characters' };
+      return { success: false, error: 'Password must be at least 8 characters.' };
     }
 
     const { data, error } = await supabase.auth.signUp({
-      email,
+      email: trimmedEmail,
       password,
       options: {
         data: {
-          full_name: fullName || email.split('@')[0],
+          full_name: trimmedName || trimmedEmail.split('@')[0],
           provider: 'email',
         },
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
+        emailRedirectTo: absoluteUrl(OAUTH_CALLBACK_PATH),
       },
     });
 
     if (error) {
       return {
         success: false,
-        error: error.message || 'Sign-up failed',
+        error: toErrorMessage(error, 'Could not create your account.'),
       };
     }
 
     if (!data.user) {
       return {
         success: false,
-        error: 'Sign-up failed: no user data returned',
+        error: 'Sign-up failed: no user was returned by the server.',
       };
     }
 
@@ -192,45 +201,44 @@ export const signUpWithEmail = async (
       session: data.session || undefined,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error during sign-up';
-    return { success: false, error: message };
+    return {
+      success: false,
+      error: toErrorMessage(error, 'Could not create your account.'),
+    };
   }
 };
 
-/**
- * Sign in with email and password
- * Authenticates existing user with email/password
- */
 export const signInWithEmail = async (
   email: string,
   password: string,
 ): Promise<AuthResponse> => {
   try {
-    // Validate inputs
-    if (!email || !email.includes('@')) {
-      return { success: false, error: 'Valid email is required' };
+    const trimmedEmail = email.trim();
+
+    if (!trimmedEmail || !trimmedEmail.includes('@')) {
+      return { success: false, error: 'Please enter a valid email address.' };
     }
 
     if (!password) {
-      return { success: false, error: 'Password is required' };
+      return { success: false, error: 'Password is required.' };
     }
 
     const { data, error } = await supabase.auth.signInWithPassword({
-      email,
+      email: trimmedEmail,
       password,
     });
 
     if (error) {
       return {
         success: false,
-        error: error.message || 'Login failed',
+        error: toErrorMessage(error, 'Invalid email or password.'),
       };
     }
 
     if (!data.user || !data.session) {
       return {
         success: false,
-        error: 'Login failed: invalid response from server',
+        error: 'Login failed: no valid session was returned.',
       };
     }
 
@@ -240,45 +248,39 @@ export const signInWithEmail = async (
       session: data.session,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error during sign-in';
-    return { success: false, error: message };
+    return {
+      success: false,
+      error: toErrorMessage(error, 'Invalid email or password.'),
+    };
   }
 };
 
-// ============================================
-// SESSION REFRESH
-// ============================================
-
-/**
- * Manually refresh access token
- * Call this when token is about to expire
- */
 export const refreshSession = async (): Promise<AuthResponse> => {
   try {
-    const session = await getCurrentSession();
+    const currentSession = await getCurrentSession();
 
-    if (!session?.refresh_token) {
+    if (!currentSession?.refresh_token) {
       return {
         success: false,
-        error: 'No refresh token available',
+        error: 'No refresh token available.',
       };
     }
 
     const { data, error } = await supabase.auth.refreshSession({
-      refresh_token: session.refresh_token,
+      refresh_token: currentSession.refresh_token,
     });
 
     if (error) {
       return {
         success: false,
-        error: error.message || 'Token refresh failed',
+        error: toErrorMessage(error, 'Session refresh failed.'),
       };
     }
 
     if (!data.user || !data.session) {
       return {
         success: false,
-        error: 'Token refresh failed: invalid response',
+        error: 'Session refresh failed: invalid server response.',
       };
     }
 
@@ -288,19 +290,13 @@ export const refreshSession = async (): Promise<AuthResponse> => {
       session: data.session,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error during token refresh';
-    return { success: false, error: message };
+    return {
+      success: false,
+      error: toErrorMessage(error, 'Session refresh failed.'),
+    };
   }
 };
 
-// ============================================
-// LOGOUT
-// ============================================
-
-/**
- * Sign out current user
- * Clears session from client and server
- */
 export const signOut = async (): Promise<AuthResponse> => {
   try {
     const { error } = await supabase.auth.signOut();
@@ -308,63 +304,55 @@ export const signOut = async (): Promise<AuthResponse> => {
     if (error) {
       return {
         success: false,
-        error: error.message || 'Sign-out failed',
+        error: toErrorMessage(error, 'Sign-out failed.'),
       };
     }
 
-    // Clear all auth-related data from localStorage
     clearAuthStorage();
-
     return { success: true };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error during sign-out';
-    return { success: false, error: message };
+    return {
+      success: false,
+      error: toErrorMessage(error, 'Sign-out failed.'),
+    };
   }
 };
 
-// ============================================
-// PASSWORD RESET
-// ============================================
-
-/**
- * Send password reset email
- * User receives email with reset link
- */
 export const requestPasswordReset = async (email: string): Promise<AuthResponse> => {
   try {
-    if (!email || !email.includes('@')) {
-      return { success: false, error: 'Valid email is required' };
+    const trimmedEmail = email.trim();
+
+    if (!trimmedEmail || !trimmedEmail.includes('@')) {
+      return { success: false, error: 'Please enter a valid email address.' };
     }
 
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/auth/reset-password`,
+    const { error } = await supabase.auth.resetPasswordForEmail(trimmedEmail, {
+      redirectTo: absoluteUrl(PASSWORD_RESET_PATH),
     });
 
     if (error) {
       return {
         success: false,
-        error: error.message || 'Password reset request failed',
+        error: toErrorMessage(error, 'Password reset request failed.'),
       };
     }
 
-    return {
-      success: true,
-      error: 'Password reset email sent. Check your inbox.',
-    };
+    return { success: true };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error during password reset';
-    return { success: false, error: message };
+    return {
+      success: false,
+      error: toErrorMessage(error, 'Password reset request failed.'),
+    };
   }
 };
 
-/**
- * Update password with reset token
- * Called after user clicks reset link in email
- */
 export const updatePasswordWithToken = async (newPassword: string): Promise<AuthResponse> => {
   try {
     if (!newPassword || newPassword.length < 8) {
-      return { success: false, error: 'Password must be at least 8 characters' };
+      return {
+        success: false,
+        error: 'Password must be at least 8 characters.',
+      };
     }
 
     const { data, error } = await supabase.auth.updateUser({
@@ -374,14 +362,14 @@ export const updatePasswordWithToken = async (newPassword: string): Promise<Auth
     if (error) {
       return {
         success: false,
-        error: error.message || 'Password update failed',
+        error: toErrorMessage(error, 'Password update failed.'),
       };
     }
 
     if (!data.user) {
       return {
         success: false,
-        error: 'Password update failed: invalid response',
+        error: 'Password update failed: invalid server response.',
       };
     }
 
@@ -390,91 +378,34 @@ export const updatePasswordWithToken = async (newPassword: string): Promise<Auth
       user: formatUser(data.user),
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error during password update';
-    return { success: false, error: message };
+    return {
+      success: false,
+      error: toErrorMessage(error, 'Password update failed.'),
+    };
   }
 };
 
-// ============================================
-// AUTH STATE LISTENER
-// ============================================
-
-/**
- * Subscribe to auth state changes
- * Fires callback whenever authentication state changes
- */
 export const onAuthStateChange = (
   callback: (user: User | null, session: Session | null) => void,
 ): (() => void) => {
-  const { data: authListener } = supabase.auth.onAuthStateChange(
-    (event, session) => {
-      callback(session?.user || null, session);
-    },
-  );
+  const { data } = supabase.auth.onAuthStateChange((_event: string, session: Session | null) => {
+    callback(session?.user || null, session);
+  });
 
   return () => {
-    authListener?.subscription.unsubscribe();
+    data?.subscription.unsubscribe();
   };
 };
 
-// ============================================
-// HELPER FUNCTIONS
-// ============================================
-
-/**
- * Format Supabase User to AuthUser
- */
-const formatUser = (user: User): AuthUser => {
-  return {
-    id: user.id,
-    email: user.email || '',
-    user_metadata: {
-      full_name: user.user_metadata?.full_name,
-      avatar_url: user.user_metadata?.avatar_url,
-      provider: user.app_metadata?.provider as 'google' | 'email' | undefined,
-    },
-    created_at: user.created_at || new Date().toISOString(),
-    updated_at: user.updated_at || new Date().toISOString(),
-  };
-};
-
-/**
- * Clear all auth-related data from localStorage
- */
-const clearAuthStorage = (): void => {
-  try {
-    // Clear Supabase auth tokens
-    const keysToRemove = Object.keys(localStorage).filter(
-      (key) =>
-        key.startsWith('sb-') ||
-        key.includes('auth') ||
-        key.startsWith('horizon.auth'),
-    );
-
-    keysToRemove.forEach((key) => {
-      localStorage.removeItem(key);
-    });
-  } catch (error) {
-    console.warn('[Auth] Failed to clear localStorage:', error);
-  }
-};
-
-/**
- * Check if user is authenticated
- */
 export const isAuthenticated = async (): Promise<boolean> => {
   const user = await getCurrentUser();
   return !!user;
 };
 
-/**
- * Get user profile from database
- * Links to public.users table via user_id
- */
 export const getUserProfile = async (userId: string) => {
   try {
     const { data, error } = await supabase
-      .from('users')
+      .from('profiles')
       .select('*')
       .eq('id', userId)
       .single();

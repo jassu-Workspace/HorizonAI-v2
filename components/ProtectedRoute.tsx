@@ -24,8 +24,9 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   }
 
   if (!isAuthenticated) {
-    // Redirect to login page
-    window.location.href = '/auth/login';
+    // Redirect to login page (using React Router navigate would be better,
+    // but window.location.href is safe here since this component is outside the router context)
+    window.location.href = '/login';
     return <>{fallback}</>;
   }
 
@@ -77,7 +78,7 @@ export const useRequireAuth = () => {
 
   React.useEffect(() => {
     if (!loading && !isAuthenticated) {
-      window.location.href = '/auth/login';
+      window.location.href = '/login';
     }
   }, [isAuthenticated, loading]);
 
@@ -96,7 +97,7 @@ export const useRequireRole = (requiredRole: string) => {
 
   React.useEffect(() => {
     if (!loading && userRole !== requiredRole) {
-      window.location.href = '/unauthorized';
+      window.location.href = '/login';
     }
   }, [userRole, loading, requiredRole]);
 

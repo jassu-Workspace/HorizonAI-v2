@@ -18,7 +18,7 @@ type AuthMode = 'login' | 'signup' | 'reset';
 const AuthForm: React.FC<AuthFormProps> = ({
   initialMode = 'login',
   onSuccess,
-  redirectUrl = '/dashboard',
+  redirectUrl = '/create',
 }) => {
   const [mode, setMode] = useState<AuthMode>(initialMode);
   const [email, setEmail] = useState('');
@@ -44,9 +44,11 @@ const AuthForm: React.FC<AuthFormProps> = ({
         const result = await signInWithEmail(email, password);
         if (result.success) {
           setSuccessMessage('Login successful! Redirecting...');
-          setTimeout(() => {
-            window.location.href = redirectUrl;
-          }, 1000);
+          // Call onSuccess to let App.tsx handle navigation via checkSession
+          // Do NOT use window.location.href as it causes full page reload and drops state
+          if (onSuccess) {
+            onSuccess();
+          }
         } else {
           setError(result.error || 'Login failed');
         }
