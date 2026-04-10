@@ -46,15 +46,16 @@ const keyPool: KeyState[] = [
     lastUsedAt: 0,
 }));
 
-// Explicit model-to-key binding requested by product requirements.
-const MODEL_TO_KEY_SLOT: Record<string, 1 | 2 | 3> = {
-    'glm-4.7': 1,
-    'z-ai/glm4.7': 1,
-    'z.ai/glm4.7': 1,
-    'z.ai glm 4.7': 1,
-    'meta/llama-3.1-405b-instruct': 2,
-    'mistralai/mistral-7b-instruct-v0.2': 3,
-};
+const primaryKeyPool = keyPool.filter(item => item.slot !== 0);
+const fallbackKeyPool = keyPool.filter(item => item.slot === 0);
+
+const SUPPORTED_MODELS = [
+    'z-ai/glm4.7',
+    'meta/llama-3.1-405b-instruct',
+    'mistralai/mistral-7b-instruct-v0.2',
+] as const;
+
+const SUPPORTED_MODEL_SET = new Set<string>(SUPPORTED_MODELS);
 
 const normalizeModelName = (model: string): string => {
     const normalized = String(model || '').trim().toLowerCase();
@@ -93,31 +94,42 @@ const isNotFoundError = (error: any): boolean => {
     return status === 404 || message.includes('404') || message.includes('not found');
 };
 
-const getAvailableKeys = (): KeyState[] => {
+const getAvailableKeys = (pool: KeyState[]): KeyState[] => {
     const now = Date.now();
-    return keyPool.filter(k => now >= k.cooldownUntil);
+    return pool.filter(k => now >= k.cooldownUntil);
 };
 
-const pickNextKey = (forModel: string): KeyState | null => {
-    const mappedSlot = MODEL_TO_KEY_SLOT[forModel];
-    if (!mappedSlot) return null;
+const pickNextKey = (): KeyState | null => {
+    const availablePrimaryKeys = getAvailableKeys(primaryKeyPool);
 
-    const available = getAvailableKeys().filter(k => k.slot === mappedSlot);
-    if (available.length === 0) return null;
+    if (availablePrimaryKeys.length > 0) {
+        for (let i = 0; i < availablePrimaryKeys.length; i++) {
+            const idx = (roundRobinPointer + i) % availablePrimaryKeys.length;
+            const candidate = availablePrimaryKeys[idx];
 
-    // Round-robin over all keys while skipping keys in cooldown.
-    for (let i = 0; i < available.length; i++) {
-        const idx = (roundRobinPointer + i) % available.length;
-        const candidate = available[idx];
-        if (Date.now() >= candidate.cooldownUntil) {
-            roundRobinPointer = (idx + 1) % available.length;
-            candidate.lastUsedAt = Date.now();
-            return candidate;
+            if (Date.now() >= candidate.cooldownUntil) {
+                roundRobinPointer = (idx + 1) % availablePrimaryKeys.length;
+                candidate.lastUsedAt = Date.now();
+                return candidate;
+            }
+        }
+
+        const lruPrimary = availablePrimaryKeys.sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
+        if (lruPrimary) {
+            lruPrimary.lastUsedAt = Date.now();
+            return lruPrimary;
         }
     }
 
-    // Fallback to least recently used from available pool.
-    return available.sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0] || null;
+    const availableFallbackKeys = getAvailableKeys(fallbackKeyPool);
+    const fallbackKey = availableFallbackKeys.sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
+
+    if (fallbackKey) {
+        fallbackKey.lastUsedAt = Date.now();
+        return fallbackKey;
+    }
+
+    return null;
 };
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -348,7 +360,8 @@ const routeInfo = () => ({
         chat: ['/api/chat', '/chat'],
         roadmap: ['/api/ai/generate-roadmap', '/ai/generate-roadmap'],
     },
-    keysConfigured: keyPool.length,
+    primaryKeysConfigured: primaryKeyPool.length,
+    fallbackKeysConfigured: fallbackKeyPool.length,
     keyHealth: summarizeKeyHealth(),
 });
 
@@ -375,9 +388,9 @@ app.post(['/api/chat', '/chat'], async (req, res) => {
             return res.status(400).json({ error: 'Missing required fields: model, messages' });
         }
 
-        if (!MODEL_TO_KEY_SLOT[requestedModel]) {
+        if (!SUPPORTED_MODEL_SET.has(requestedModel)) {
             return res.status(400).json({
-                error: `Unsupported model '${model}'. Allowed models: z-ai/glm4.7, meta/llama-3.1-405b-instruct, mistralai/mistral-7b-instruct-v0.2`,
+                error: `Unsupported model '${model}'. Allowed models: ${SUPPORTED_MODELS.join(', ')}`,
             });
         }
 
@@ -390,7 +403,7 @@ app.post(['/api/chat', '/chat'], async (req, res) => {
         const maxAttempts = Math.max(1, MAX_RETRIES_PER_REQUEST);
 
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            const keyState = pickNextKey(requestedModel);
+            const keyState = pickNextKey();
 
             if (!keyState) {
                 const soonest = Math.min(...keyPool.map(k => k.cooldownUntil));
@@ -418,7 +431,7 @@ app.post(['/api/chat', '/chat'], async (req, res) => {
                 if (requestedModel === 'z-ai/glm4.7' && isNotFoundError(error)) {
                     try {
                         const fallbackModel = 'meta/llama-3.1-405b-instruct';
-                        const fallbackKeyState = pickNextKey(fallbackModel);
+                        const fallbackKeyState = pickNextKey();
                         if (fallbackKeyState) {
                             const fallbackClient = createClientForKey(fallbackKeyState.key);
                             const completion = await fallbackClient.chat.completions.create({
@@ -528,7 +541,7 @@ Rules:
         let lastError: any = null;
 
         for (const candidateModel of candidateModels) {
-            const keyState = pickNextKey(candidateModel);
+            const keyState = pickNextKey();
 
             if (!keyState) {
                 continue;

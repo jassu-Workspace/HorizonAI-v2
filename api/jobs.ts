@@ -12,6 +12,33 @@ const NVIDIA_BASE_URL = process.env.NVIDIA_API_BASE || 'https://integrate.api.nv
 
 const MODEL = 'meta/llama-3.1-405b-instruct';
 
+type KeyState = {
+    slot: number;
+    key: string;
+    label: string;
+    cooldownUntil: number;
+    failures: number;
+    lastUsedAt: number;
+};
+
+const keyPool: KeyState[] = [
+    { slot: 1, key: (process.env.NVIDIA_API_KEY_1 || '').trim(), label: 'key-1' },
+    { slot: 2, key: (process.env.NVIDIA_API_KEY_2 || '').trim(), label: 'key-2' },
+    { slot: 3, key: (process.env.NVIDIA_API_KEY_3 || '').trim(), label: 'key-3' },
+    { slot: 0, key: (process.env.NVIDIA_API_KEY || '').trim(), label: 'key-default' },
+]
+    .filter(item => Boolean(item.key))
+    .map(item => ({
+        ...item,
+        cooldownUntil: 0,
+        failures: 0,
+        lastUsedAt: 0,
+    }));
+
+const primaryKeyPool = keyPool.filter(item => item.slot !== 0);
+const fallbackKeyPool = keyPool.filter(item => item.slot === 0);
+let roundRobinPointer = 0;
+
 // Parse ALLOWED_ORIGINS from env
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
     .split(',')
@@ -91,13 +118,42 @@ const setCorsHeaders = (req: any, res: any): boolean => {
     return isAllowed;
 };
 
+const getAvailableKeys = (pool: KeyState[]): KeyState[] => {
+    const now = Date.now();
+    return pool.filter(keyState => now >= keyState.cooldownUntil);
+};
+
 const pickApiKey = (): string => {
-    return (
-        String(process.env.NVIDIA_API_KEY_2 || '').trim() ||
-        String(process.env.NVIDIA_API_KEY_1 || '').trim() ||
-        String(process.env.NVIDIA_API_KEY_3 || '').trim() ||
-        String(process.env.NVIDIA_API_KEY || '').trim()
-    );
+    const availablePrimary = getAvailableKeys(primaryKeyPool);
+
+    if (availablePrimary.length > 0) {
+        for (let i = 0; i < availablePrimary.length; i++) {
+            const idx = (roundRobinPointer + i) % availablePrimary.length;
+            const candidate = availablePrimary[idx];
+
+            if (Date.now() >= candidate.cooldownUntil) {
+                roundRobinPointer = (idx + 1) % availablePrimary.length;
+                candidate.lastUsedAt = Date.now();
+                return candidate.key;
+            }
+        }
+
+        const lruPrimary = availablePrimary.sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
+        if (lruPrimary) {
+            lruPrimary.lastUsedAt = Date.now();
+            return lruPrimary.key;
+        }
+    }
+
+    const availableFallback = getAvailableKeys(fallbackKeyPool);
+    const fallbackKey = availableFallback.sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
+
+    if (fallbackKey) {
+        fallbackKey.lastUsedAt = Date.now();
+        return fallbackKey.key;
+    }
+
+    return '';
 };
 
 const parseJsonResponse = <T,>(text: string): T => {

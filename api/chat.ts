@@ -56,12 +56,6 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
 
 const ALLOWED_MODELS = ['z-ai/glm4.7', 'meta/llama-3.1-405b-instruct', 'mistralai/mistral-7b-instruct-v0.2'] as const;
 
-const MODEL_TO_KEY_SLOT: Record<(typeof ALLOWED_MODELS)[number], 1 | 2 | 3> = {
-    'z-ai/glm4.7': 1,
-    'meta/llama-3.1-405b-instruct': 2,
-    'mistralai/mistral-7b-instruct-v0.2': 3,
-};
-
 type KeyState = {
     slot: number;
     key: string;
@@ -84,6 +78,9 @@ const keyPool: KeyState[] = [
         failures: 0,
         lastUsedAt: 0,
     }));
+
+const primaryKeyPool = keyPool.filter(item => item.slot !== 0);
+const fallbackKeyPool = keyPool.filter(item => item.slot === 0);
 
 const recentRequests = new Map<string, Array<{ timestamp: number; estimatedTokens: number }>>();
 
@@ -128,19 +125,20 @@ const isNotFoundError = (error: any): boolean => {
     return status === 404 || message.includes('404') || message.includes('not found');
 };
 
-const getAvailableKeys = (): KeyState[] => {
+const getAvailableKeys = (pool: KeyState[]): KeyState[] => {
     const now = Date.now();
-    return keyPool.filter(k => now >= k.cooldownUntil);
+    return pool.filter(k => now >= k.cooldownUntil);
 };
 
-const pickNextKey = (forModel: (typeof ALLOWED_MODELS)[number]): KeyState | null => {
-    const mappedSlot = MODEL_TO_KEY_SLOT[forModel];
-    const available = getAvailableKeys().filter(k => k.slot === mappedSlot || k.slot === 0);
+const pickFromPool = (pool: KeyState[]): KeyState | null => {
+    const available = getAvailableKeys(pool);
+
     if (available.length === 0) return null;
 
     for (let i = 0; i < available.length; i++) {
         const idx = (roundRobinPointer + i) % available.length;
         const candidate = available[idx];
+
         if (Date.now() >= candidate.cooldownUntil) {
             roundRobinPointer = (idx + 1) % available.length;
             candidate.lastUsedAt = Date.now();
@@ -148,24 +146,20 @@ const pickNextKey = (forModel: (typeof ALLOWED_MODELS)[number]): KeyState | null
         }
     }
 
-    return available.sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0] || null;
+    const lru = available.sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0] || null;
+    if (lru) {
+        lru.lastUsedAt = Date.now();
+    }
+
+    return lru;
+};
+
+const pickNextKey = (_forModel?: (typeof ALLOWED_MODELS)[number]): KeyState | null => {
+    return pickFromPool(primaryKeyPool) || pickFromPool(fallbackKeyPool);
 };
 
 const pickAnyAvailableKey = (): KeyState | null => {
-    const available = getAvailableKeys();
-    if (available.length === 0) return null;
-
-    for (let i = 0; i < available.length; i++) {
-        const idx = (roundRobinPointer + i) % available.length;
-        const candidate = available[idx];
-        if (Date.now() >= candidate.cooldownUntil) {
-            roundRobinPointer = (idx + 1) % available.length;
-            candidate.lastUsedAt = Date.now();
-            return candidate;
-        }
-    }
-
-    return available.sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0] || null;
+    return pickFromPool(primaryKeyPool) || pickFromPool(fallbackKeyPool);
 };
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
