@@ -68,8 +68,15 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
         setLoading(true);
         setError('');
         try {
+            const redirectTo = typeof window !== 'undefined'
+                ? new URL('/dashboard', window.location.origin).toString()
+                : 'https://horizon-ai-v2.vercel.app/dashboard';
+
             const { error } = await supabase.auth.signInWithOAuth({
                 provider: 'google',
+                options: {
+                    redirectTo,
+                },
             });
             if (error) throw error;
             // Supabase handles the redirect. onAuthSuccess will be called after the user returns.
