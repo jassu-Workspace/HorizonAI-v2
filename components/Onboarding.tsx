@@ -199,6 +199,27 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
         } catch (err: any) {
             console.error("Failed to save profile or upload resume", err);
             const errorMessage = err?.message || "An error occurred. Please try again.";
+
+            if (
+                String(errorMessage).toLowerCase().includes('full_name') ||
+                String(errorMessage).toLowerCase().includes('schema cache') ||
+                String(errorMessage).toLowerCase().includes('column')
+            ) {
+                onComplete({
+                    fullName,
+                    academicLevel,
+                    stream,
+                    academicCourse: branch,
+                    specialization: academics,
+                    learningStyle,
+                    focusArea,
+                    resumePath,
+                    skills: '',
+                    interests: '',
+                });
+                return;
+            }
+
             if (String(errorMessage).toLowerCase().includes('not authenticated')) {
                 alert('Please sign in to save your profile.');
                 navigate('/auth');

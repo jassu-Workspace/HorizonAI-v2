@@ -71,6 +71,81 @@ const resolveProfileFullName = (
     );
 };
 
+const extractMissingColumnName = (error: any): string | null => {
+    const message = String(error?.message || error || '');
+    const patterns = [
+        /Could not find the ['"]([^'"]+)['"] column/i,
+        /column ['"]([^'"]+)['"] of/i,
+        /column ['"]([^'"]+)['"] does not exist/i,
+        /'([^']+)' column/i,
+        /column\s+([a-zA-Z0-9_]+)\s+does not exist/i,
+    ];
+
+    for (const pattern of patterns) {
+        const match = message.match(pattern);
+        if (match?.[1]) {
+            return match[1];
+        }
+    }
+
+    return null;
+};
+
+const filterOutColumns = (payload: Record<string, any>, excludedColumns: Set<string>) => {
+    return Object.keys(payload).reduce<Record<string, any>>((accumulator, key) => {
+        if (!excludedColumns.has(key)) {
+            accumulator[key] = payload[key];
+        }
+        return accumulator;
+    }, {});
+};
+
+const writeProfileWithMissingColumnFallback = async (
+    basePayload: Record<string, any>,
+    write: (payload: Record<string, any>) => Promise<{ error: any }>
+): Promise<any> => {
+    const excludedColumns = new Set<string>();
+    const maxAttempts = Math.max(1, Object.keys(basePayload).length);
+    let lastError: any = null;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const filteredPayload = filterOutColumns(basePayload, excludedColumns);
+        const { error } = await write(filteredPayload);
+
+        if (!error) {
+            return null;
+        }
+
+        lastError = error;
+
+        const missingColumn = extractMissingColumnName(error);
+        if (!missingColumn || excludedColumns.has(missingColumn)) {
+            return error;
+        }
+
+        excludedColumns.add(missingColumn);
+    }
+
+    return lastError;
+};
+
+const syncAuthProfileName = async (user: any, fullName: string) => {
+    if (typeof supabase?.auth?.updateUser !== 'function') {
+        return;
+    }
+
+    try {
+        await supabase.auth.updateUser({
+            data: {
+                full_name: fullName,
+                name: fullName,
+            },
+        });
+    } catch (metadataError) {
+        console.warn('Unable to sync profile name to auth metadata:', metadataError);
+    }
+};
+
 // --- HELPER: Map Normalized DB Rows to RoadmapData Object ---
 const mapDBToRoadmap = (row: any): RoadmapData => {
     // Sort weeks by week number
@@ -193,47 +268,12 @@ export const saveProfileFromOnboarding = async (profile: UserProfile) => {
     
     // Use upsert for resilience. If a DB trigger created a blank profile,
     // this will update it. If the trigger failed, this will insert it.
-    let { error } = await supabase.from('profiles').upsert(profileData, { onConflict: 'id' });
+    const error = await writeProfileWithMissingColumnFallback(profileData, (payload) => {
+        return supabase.from('profiles').upsert(payload, { onConflict: 'id' });
+    });
 
-    const errorMessage = String(error?.message || '').toLowerCase();
-    const shouldRetryWithoutFullName = Boolean(error) && (
-        error?.code === '42703' ||
-        errorMessage.includes('full_name') ||
-        errorMessage.includes('schema cache') ||
-        errorMessage.includes('column')
-    );
-
-    // Fallback for older schemas or stale schema caches that do not expose full_name yet.
-    if (shouldRetryWithoutFullName) {
-        const minimalProfileData = {
-            id: user.id,
-            role: userRole,
-            academic_level: profile.academicLevel,
-            stream: profile.stream,
-            academic_course: profile.academicCourse,
-            interested_subjects: profile.specialization || profile.interestedSubjects,
-            learning_style: profile.learningStyle,
-            focus_area: profile.focusArea,
-            resume_path: profile.resumePath,
-            updated_at: new Date().toISOString(),
-            total_points: 0,
-        };
-
-        const retry = await supabase.from('profiles').upsert(minimalProfileData, { onConflict: 'id' });
-        error = retry.error;
-
-        if (!error) {
-            try {
-                await supabase.auth.updateUser({
-                    data: {
-                        full_name: fullName,
-                        name: fullName,
-                    },
-                });
-            } catch (metadataError) {
-                console.warn('Unable to sync profile name to auth metadata:', metadataError);
-            }
-        }
+    if (!error) {
+        await syncAuthProfileName(user, fullName);
     }
 
     if (error) {
@@ -261,32 +301,12 @@ export const updateProfileFromDashboard = async (profile: UserProfile) => {
         updated_at: new Date().toISOString()
     };
 
-    let { error } = await supabase.from('profiles').update(updates).eq('id', user.id);
-    const errorMessage = String(error?.message || '').toLowerCase();
-    const shouldRetryWithoutFullName = Boolean(error) && (
-        error?.code === '42703' ||
-        errorMessage.includes('full_name') ||
-        errorMessage.includes('schema cache') ||
-        errorMessage.includes('column')
-    );
+    const error = await writeProfileWithMissingColumnFallback(updates, (payload) => {
+        return supabase.from('profiles').update(payload).eq('id', user.id);
+    });
 
-    if (shouldRetryWithoutFullName) {
-        const { full_name, ...minimalUpdates } = updates;
-        const retry = await supabase.from('profiles').update(minimalUpdates).eq('id', user.id);
-        error = retry.error;
-
-        if (!error) {
-            try {
-                await supabase.auth.updateUser({
-                    data: {
-                        full_name: fullName,
-                        name: fullName,
-                    },
-                });
-            } catch (metadataError) {
-                console.warn('Unable to sync profile name to auth metadata:', metadataError);
-            }
-        }
+    if (!error) {
+        await syncAuthProfileName(user, fullName);
     }
 
     if (error) {
