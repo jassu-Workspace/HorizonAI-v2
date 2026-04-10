@@ -54,6 +54,23 @@ if (!isSupabaseConfigured) {
 
 export { supabase };
 
+const resolveProfileFullName = (
+    user: any,
+    source?: { fullName?: string; full_name?: string }
+): string => {
+    const metadata = user?.user_metadata || {};
+
+    return (
+        source?.fullName ||
+        source?.full_name ||
+        metadata.full_name ||
+        metadata.name ||
+        metadata.display_name ||
+        user?.email?.split('@')[0] ||
+        'User'
+    );
+};
+
 // --- HELPER: Map Normalized DB Rows to RoadmapData Object ---
 const mapDBToRoadmap = (row: any): RoadmapData => {
     // Sort weeks by week number
@@ -118,7 +135,7 @@ export const getCurrentProfile = async (): Promise<UserProfile | null> => {
 
         return {
             id: user.id,
-            fullName: data.full_name,
+            fullName: resolveProfileFullName(user, data),
             role: roleMap[String(data.role || 'user').toLowerCase()] || 'user',
             academicLevel: data.academic_level,
             stream: data.stream,
@@ -149,10 +166,11 @@ export const saveProfileFromOnboarding = async (profile: UserProfile) => {
     if (!user) throw new Error("User not authenticated.");
 
     const userRole: 'user' = 'user';
+    const fullName = resolveProfileFullName(user, profile);
 
     const profileData = {
         id: user.id,
-        full_name: profile.fullName,
+        full_name: fullName,
         role: userRole,
         academic_level: profile.academicLevel,
         stream: profile.stream,
@@ -178,18 +196,17 @@ export const saveProfileFromOnboarding = async (profile: UserProfile) => {
     let { error } = await supabase.from('profiles').upsert(profileData, { onConflict: 'id' });
 
     const errorMessage = String(error?.message || '').toLowerCase();
+    const shouldRetryWithoutFullName = Boolean(error) && (
+        error?.code === '42703' ||
+        errorMessage.includes('full_name') ||
+        errorMessage.includes('schema cache') ||
+        errorMessage.includes('column')
+    );
 
-    if (error && (errorMessage.includes('full_name') || errorMessage.includes('schema cache'))) {
-        throw new Error(
-            "Your Supabase database is missing the profiles.full_name column or the schema cache is stale. Run the latest supabase_schema.sql, then reload the schema cache and try again."
-        );
-    }
-
-    // Fallback for older schemas that do not yet include all optional columns.
-    if (error && (error.code === '42703' || String(error.message || '').toLowerCase().includes('column'))) {
+    // Fallback for older schemas or stale schema caches that do not expose full_name yet.
+    if (shouldRetryWithoutFullName) {
         const minimalProfileData = {
             id: user.id,
-            full_name: profile.fullName,
             role: userRole,
             academic_level: profile.academicLevel,
             stream: profile.stream,
@@ -204,6 +221,19 @@ export const saveProfileFromOnboarding = async (profile: UserProfile) => {
 
         const retry = await supabase.from('profiles').upsert(minimalProfileData, { onConflict: 'id' });
         error = retry.error;
+
+        if (!error) {
+            try {
+                await supabase.auth.updateUser({
+                    data: {
+                        full_name: fullName,
+                        name: fullName,
+                    },
+                });
+            } catch (metadataError) {
+                console.warn('Unable to sync profile name to auth metadata:', metadataError);
+            }
+        }
     }
 
     if (error) {
@@ -216,8 +246,10 @@ export const updateProfileFromDashboard = async (profile: UserProfile) => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error("User not authenticated.");
 
+    const fullName = resolveProfileFullName(user, profile);
+
     const updates = {
-        full_name: profile.fullName,
+        full_name: fullName,
         academic_level: profile.academicLevel,
         stream: profile.stream,
         previous_performance: profile.previousPerformance,
@@ -229,7 +261,34 @@ export const updateProfileFromDashboard = async (profile: UserProfile) => {
         updated_at: new Date().toISOString()
     };
 
-    const { error } = await supabase.from('profiles').update(updates).eq('id', user.id);
+    let { error } = await supabase.from('profiles').update(updates).eq('id', user.id);
+    const errorMessage = String(error?.message || '').toLowerCase();
+    const shouldRetryWithoutFullName = Boolean(error) && (
+        error?.code === '42703' ||
+        errorMessage.includes('full_name') ||
+        errorMessage.includes('schema cache') ||
+        errorMessage.includes('column')
+    );
+
+    if (shouldRetryWithoutFullName) {
+        const { full_name, ...minimalUpdates } = updates;
+        const retry = await supabase.from('profiles').update(minimalUpdates).eq('id', user.id);
+        error = retry.error;
+
+        if (!error) {
+            try {
+                await supabase.auth.updateUser({
+                    data: {
+                        full_name: fullName,
+                        name: fullName,
+                    },
+                });
+            } catch (metadataError) {
+                console.warn('Unable to sync profile name to auth metadata:', metadataError);
+            }
+        }
+    }
+
     if (error) {
         console.error("Error updating dashboard profile:", error);
         throw error;
