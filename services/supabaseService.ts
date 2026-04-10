@@ -23,6 +23,7 @@ if (!isSupabaseConfigured) {
             signOut: async () => {},
             signInWithOAuth: async () => ({ error: { message: "Supabase not configured" } }),
         },
+        rpc: async () => ({ error: { message: "Supabase not configured" } }),
         from: () => ({ 
             select: () => ({ 
                 eq: () => ({ 
@@ -127,6 +128,43 @@ const writeProfileWithMissingColumnFallback = async (
     }
 
     return lastError;
+};
+
+const writeProfileViaRpc = async (payload: Record<string, any>) => {
+    if (typeof supabase?.rpc !== 'function') {
+        return { error: { message: 'Profile RPC unavailable' } };
+    }
+
+    try {
+        return await supabase.rpc('save_or_update_profile', {
+            profile_data: payload,
+        });
+    } catch (error: any) {
+        return { error };
+    }
+};
+
+const writeProfileWithFallbacks = async (
+    payload: Record<string, any>,
+    write: (payload: Record<string, any>) => Promise<{ error: any }>
+): Promise<any> => {
+    const rpcResult = await writeProfileViaRpc(payload);
+    if (!rpcResult?.error) {
+        return null;
+    }
+
+    const rpcMessage = String(rpcResult.error?.message || '').toLowerCase();
+    const rpcUnavailable =
+        rpcMessage.includes('could not find the function') ||
+        rpcMessage.includes('does not exist') ||
+        rpcMessage.includes('profile rpc unavailable') ||
+        rpcMessage.includes('supabase not configured');
+
+    if (!rpcUnavailable) {
+        return rpcResult.error;
+    }
+
+    return writeProfileWithMissingColumnFallback(payload, write);
 };
 
 const syncAuthProfileName = async (user: any, fullName: string) => {
@@ -266,9 +304,9 @@ export const saveProfileFromOnboarding = async (profile: UserProfile) => {
         total_points: 0,
     };
     
-    // Use upsert for resilience. If a DB trigger created a blank profile,
-    // this will update it. If the trigger failed, this will insert it.
-    const error = await writeProfileWithMissingColumnFallback(profileData, (payload) => {
+    // Use the RPC first so RLS cannot block the write when the hotfix SQL is installed.
+    // Fall back to direct table writes only if the RPC is not available.
+    const error = await writeProfileWithFallbacks(profileData, (payload) => {
         return supabase.from('profiles').upsert(payload, { onConflict: 'id' });
     });
 
@@ -301,7 +339,7 @@ export const updateProfileFromDashboard = async (profile: UserProfile) => {
         updated_at: new Date().toISOString()
     };
 
-    const error = await writeProfileWithMissingColumnFallback(updates, (payload) => {
+    const error = await writeProfileWithFallbacks(updates, (payload) => {
         return supabase.from('profiles').update(payload).eq('id', user.id);
     });
 
