@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
+import { AuthProvider } from './contexts/AuthContext';
 import App from './App';
 import './types';
 import './index.css';
@@ -31,7 +32,7 @@ class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasErr
         </div>
       );
     }
-    return this.props.children; 
+    return this.props.children;
   }
 }
 
@@ -45,8 +46,10 @@ root.render(
   <React.StrictMode>
     <ErrorBoundary>
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-            <App />
-        </BrowserRouter>
+        <AuthProvider>
+          <App />
+        </AuthProvider>
+      </BrowserRouter>
     </ErrorBoundary>
   </React.StrictMode>
 );

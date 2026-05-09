@@ -18,6 +18,7 @@ import cors from 'cors';
 import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
 import compression from 'compression';
+import roadmapRouter from './api/roadmap';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -386,6 +387,9 @@ app.post('/api/chat', async (req, res) => {
         });
     }
 });
+
+// Register roadmap generation routes
+app.use('/api', roadmapRouter);
 
 // 404 handler
 app.use((req, res) => {

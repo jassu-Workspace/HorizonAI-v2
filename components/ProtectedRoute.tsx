@@ -1,105 +1,79 @@
 import React from 'react';
+import { Navigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { Loader } from '../components/Loader';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
-  fallback?: React.ReactNode;
 }
 
 /**
  * PROTECTED ROUTE COMPONENT
  * =========================
  * Restricts access to authenticated users only
- * Redirects to login if not authenticated
+ * - If loading: show loader
+ * - If not authenticated: <Navigate to="/login" />
+ * - If authenticated: render children
+ *
+ * CRITICAL: Uses <Navigate> to prevent redirect loops
  */
 export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   children,
-  fallback = <DefaultLoader />,
 }) => {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, isLoading } = useAuth();
 
-  if (loading) {
-    return <>{fallback}</>;
+  // If still loading, show loader (prevents redirect flicker)
+  if (isLoading) {
+    return <AuthLoader />;
   }
 
+  // If not authenticated, redirect to login (ONCE)
   if (!isAuthenticated) {
-    // Redirect to login page (using React Router navigate would be better,
-    // but window.location.href is safe here since this component is outside the router context)
-    window.location.href = '/login';
-    return <>{fallback}</>;
+    return <Navigate to="/login" replace />;
   }
 
+  // Authenticated: render component
   return <>{children}</>;
 };
 
 /**
  * PUBLIC ROUTE COMPONENT
  * ======================
- * Only accessible if NOT authenticated
- * Redirects to dashboard if already logged in
+ * For pages like login/signup
+ * - If loading: show loader
+ * - If authenticated: <Navigate to="/dashboard" />
+ * - If not authenticated: render children
  */
 export const PublicRoute: React.FC<ProtectedRouteProps> = ({
   children,
-  fallback = <DefaultLoader />,
 }) => {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, isLoading } = useAuth();
 
-  if (loading) {
-    return <>{fallback}</>;
+  // If still loading, show loader
+  if (isLoading) {
+    return <AuthLoader />;
   }
 
+  // If already authenticated, redirect to dashboard
   if (isAuthenticated) {
-    // Redirect to dashboard
-    window.location.href = '/dashboard';
-    return <>{fallback}</>;
+    return <Navigate to="/dashboard" replace />;
   }
 
+  // Not authenticated: render component (login/signup)
   return <>{children}</>;
 };
 
 /**
- * DEFAULT LOADER COMPONENT
+ * AUTH LOADER COMPONENT
  */
-const DefaultLoader: React.FC = () => (
-  <div className="flex items-center justify-center min-h-screen">
+const AuthLoader: React.FC = () => (
+  <div style={{
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    minHeight: '100vh',
+    backgroundColor: '#f5f5f5',
+  }}>
     <Loader message="Loading..." />
   </div>
 );
-
-/**
- * REQUIRE AUTH HOOK
- * =================
- * Use in components to require authentication
- * Returns user if authenticated, null otherwise
- */
-export const useRequireAuth = () => {
-  const { user, isAuthenticated, loading } = useAuth();
-
-  React.useEffect(() => {
-    if (!loading && !isAuthenticated) {
-      window.location.href = '/login';
-    }
-  }, [isAuthenticated, loading]);
-
-  return user;
-};
-
-/**
- * REQUIRE ROLE HOOK
- * =================
- * Use to require specific user role
- * Requires custom role field in user metadata
- */
-export const useRequireRole = (requiredRole: string) => {
-  const { user, loading } = useAuth();
-  const userRole = user?.user_metadata?.role as string | undefined;
-
-  React.useEffect(() => {
-    if (!loading && userRole !== requiredRole) {
-      window.location.href = '/login';
-    }
-  }, [userRole, loading, requiredRole]);
-
-  return user;
-};

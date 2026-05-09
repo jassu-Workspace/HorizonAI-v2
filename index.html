@@ -12,10 +12,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 
-    <!-- Tailwind CSS -->
-    <script defer src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
+        <!-- Tailwind CSS -->
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script>
+                window.tailwind = window.tailwind || {};
+                window.tailwind.config = {
           darkMode: 'class',
           theme: {
             extend: {

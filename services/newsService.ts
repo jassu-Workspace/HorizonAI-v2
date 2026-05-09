@@ -1,26 +1,3 @@
-import { NewsArticle } from '../types';
+export const getEducationNews = async (topic?: string) => ({ articles: [] });
 
-export const getEducationNews = async (topic: string): Promise<NewsArticle[]> => {
-    try {
-        const response = await fetch(`/api/news?topic=${encodeURIComponent(topic || '')}`, {
-            method: 'GET',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-        });
-
-        if (!response.ok) {
-            return [];
-        }
-
-        const data = await response.json().catch(() => null);
-        if (!data || typeof data !== 'object') {
-            return [];
-        }
-
-        const results = Array.isArray(data?.results) ? data.results : [];
-        return results as NewsArticle[];
-    } catch {
-        return [];
-    }
-};
+export default { getEducationNews };

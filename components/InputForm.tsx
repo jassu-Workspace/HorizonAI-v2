@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import Select from 'react-select';
 import { UserProfile } from '../types';
+import { generateSkillSuggestions, SkillSuggestion } from '../services/assessmentApiService';
 
 interface InputFormProps {
     existingProfile: UserProfile;
@@ -13,8 +15,13 @@ const skillExamples = ["baking sourdough", "graphic design", "playing guitar", "
 const interestExamples = ["Finance & Fintech", "Healthcare AI", "Sustainable Energy", "Game Development", "Ancient History"];
 
 const InputForm: React.FC<InputFormProps> = ({ existingProfile, onSubmit, title, isLoading = false, errorMessage }) => {
-    const [skills, setSkills] = useState('');
-    const [interests, setInterests] = useState('');
+    const [skills, setSkills] = useState(existingProfile.skills || '');
+    const [interests, setInterests] = useState(existingProfile.interests || '');
+    const [suggestions, setSuggestions] = useState<SkillSuggestion[]>([]);
+    const [suggestionError, setSuggestionError] = useState('');
+    const [academicLevel, setAcademicLevel] = useState(existingProfile.academicLevel || 'Graduation');
+    const [prevAcademicHistory, setPrevAcademicHistory] = useState('');
+    const [presentSkills, setPresentSkills] = useState<string[]>([]);
     
     const [skillExample, setSkillExample] = useState(skillExamples[0]);
     const [interestExample, setInterestExample] = useState(interestExamples[0]);
@@ -26,17 +33,41 @@ const InputForm: React.FC<InputFormProps> = ({ existingProfile, onSubmit, title,
         }, 5000);
         return () => clearInterval(interval);
     }, []);
+
+    useEffect(() => {
+        if (!skills.trim() || !interests.trim()) {
+            setSuggestions([]);
+            setSuggestionError('');
+            return;
+        }
+
+        const debounceTimer = window.setTimeout(async () => {
+            try {
+                setSuggestionError('');
+                const results = await generateSkillSuggestions(skills, interests);
+                setSuggestions(results.slice(0, 4));
+            } catch (error) {
+                console.warn('[InputForm] Skill suggestions fetch failed:', error);
+                setSuggestionError('Unable to fetch skill suggestions right now.');
+                setSuggestions([]);
+            }
+        }, 700);
+
+        return () => window.clearTimeout(debounceTimer);
+    }, [skills, interests]);
     
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (isLoading) return; // prevent double-submit
-        
-        const profile: UserProfile = { 
+
+        const profile: UserProfile = {
             ...existingProfile,
-            skills, 
-            interests
+            skills,
+            interests,
+            academicLevel,
+            prevAcademicHistory,
+            presentSkills: presentSkills.join(', '),
         };
-        
         onSubmit(profile);
     };
     
@@ -87,8 +118,80 @@ const InputForm: React.FC<InputFormProps> = ({ existingProfile, onSubmit, title,
                         />
                          <div className="mt-1 text-xs text-slate-500 dark:text-slate-400 h-4">e.g., <span className="transition-opacity duration-500 ease-in-out">{interestExample}</span></div>
                     </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Academic Level</label>
+                        <select
+                            value={academicLevel}
+                            onChange={e => setAcademicLevel(e.target.value)}
+                            className="w-full px-4 py-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition text-slate-900 dark:text-white disabled:opacity-60 disabled:cursor-not-allowed"
+                            disabled={isLoading}
+                        >
+                            <option value="Graduation">Graduation</option>
+                            <option value="Intermediate">Intermediate</option>
+                            <option value="Diploma">Diploma</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Previous Academic History</label>
+                        <input
+                            type="text"
+                            value={prevAcademicHistory}
+                            onChange={e => setPrevAcademicHistory(e.target.value)}
+                            placeholder={academicLevel === 'Graduation' ? 'e.g., Intermediate or Diploma' : 'e.g., 10th, 12th, etc.'}
+                            className="w-full px-4 py-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition text-slate-900 dark:text-white disabled:opacity-60 disabled:cursor-not-allowed"
+                            disabled={isLoading}
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Present Skills (search & select)</label>
+                        <Select
+                            isMulti
+                            isClearable
+                            placeholder="Type to search and select skills..."
+                            value={presentSkills.map(s => ({ value: s, label: s }))}
+                            onChange={opts => setPresentSkills((opts || []).map((o: any) => o.value))}
+                            options={[
+                                { value: 'HTML', label: 'HTML' },
+                                { value: 'CSS', label: 'CSS' },
+                                { value: 'JavaScript', label: 'JavaScript' },
+                                { value: 'Python', label: 'Python' },
+                                { value: 'Prompt Engineering', label: 'Prompt Engineering' },
+                                { value: 'Vibe Coding', label: 'Vibe Coding' },
+                                { value: 'React', label: 'React' },
+                                { value: 'Node.js', label: 'Node.js' },
+                                { value: 'SQL', label: 'SQL' },
+                                { value: 'Machine Learning', label: 'Machine Learning' },
+                                { value: 'Data Analysis', label: 'Data Analysis' },
+                                { value: 'Public Speaking', label: 'Public Speaking' },
+                                { value: 'UI/UX Design', label: 'UI/UX Design' },
+                                { value: 'Cloud Computing', label: 'Cloud Computing' },
+                                { value: 'Other', label: 'Other' },
+                            ]}
+                            isDisabled={isLoading}
+                        />
+                    </div>
                 </div>
-                
+
+                {suggestionError && (
+                    <div className="mt-4 text-sm text-amber-700 dark:text-amber-300">
+                        {suggestionError}
+                    </div>
+                )}
+
+                {suggestions.length > 0 && (
+                    <div className="mt-6 p-4 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                        <h3 className="text-sm font-semibold text-slate-900 dark:text-white mb-2">Suggested skills to explore</h3>
+                        <ul className="space-y-3 text-sm text-slate-700 dark:text-slate-300">
+                            {suggestions.map((suggestion) => (
+                                <li key={suggestion.name} className="rounded-lg p-3 bg-white/80 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                                    <strong className="block text-slate-900 dark:text-white">{suggestion.name}</strong>
+                                    <span className="block text-slate-500 dark:text-slate-400">{suggestion.description}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
+
                 <div className="mt-8 text-center">
                     <button
                         type="submit"

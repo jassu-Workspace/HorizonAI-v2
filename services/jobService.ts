@@ -1,196 +1,182 @@
-import { RoadmapData, UserProfile } from '../types';
-import { supabase } from './supabaseService';
+import { RoadmapData } from '../types';
 
-export type JobStatus = 'pending' | 'running' | 'completed' | 'failed';
+const BACKEND_URL = process.env.VITE_BACKEND_URL || 'http://localhost:3004';
 
-export type WorkflowJob<TPayload = Record<string, unknown>, TResult = Record<string, unknown>> = {
-    id: string;
-    user_id: string;
-    type: string;
-    status: JobStatus;
-    progress: number;
-    idempotency_key: string;
-    payload: TPayload;
-    result: TResult | null;
-    error: string | null;
-    created_at: string;
-    updated_at: string;
+export type RoadmapGenerationJob = {
+  id: string;
+  status: 'pending' | 'completed' | 'failed';
+  skill: string;
+  userLevel: 'Beginner' | 'Intermediate' | 'Expert';
+  interestDomain: string;
+  roadmap?: RoadmapData;
+  error?: string;
+  createdAt: string;
 };
 
-const ACTIVE_JOB_ID_KEY = 'horizon.activeRoadmapJobId';
-const ACTIVE_STEP_KEY = 'horizon.workflowStep';
+// Store jobs in memory (in production, would use database/Redis)
+const jobStore = new Map<string, RoadmapGenerationJob>();
 
-const safeStorageGet = (key: string): string | null => {
-    try {
-        return localStorage.getItem(key);
-    } catch {
-        return null;
+/**
+ * Create a new roadmap generation job
+ */
+export const createRoadmapJob = async (payload: {
+  skill: string;
+  userLevel: 'Beginner' | 'Intermediate' | 'Expert';
+  interestDomain: string;
+  weeks?: number;
+}): Promise<{ jobId: string }> => {
+  const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+
+  const job: RoadmapGenerationJob = {
+    id: jobId,
+    status: 'pending',
+    skill: payload.skill,
+    userLevel: payload.userLevel,
+    interestDomain: payload.interestDomain,
+    createdAt: new Date().toISOString(),
+  };
+
+  jobStore.set(jobId, job);
+
+  // Immediately start the job in the background
+  generateRoadmapBackground(jobId, payload).catch(error => {
+    console.error(`[jobService] Background generation failed for ${jobId}:`, error);
+    const job = jobStore.get(jobId);
+    if (job) {
+      job.status = 'failed';
+      job.error = error instanceof Error ? error.message : 'Unknown error';
     }
+  });
+
+  return { jobId };
 };
 
-const safeStorageSet = (key: string, value: string) => {
-    try {
-        localStorage.setItem(key, value);
-    } catch {
-        // Ignore storage-write failures in restricted browser contexts.
-    }
-};
+/**
+ * Generate roadmap in background
+ */
+const generateRoadmapBackground = async (
+  jobId: string,
+  payload: {
+    skill: string;
+    userLevel: 'Beginner' | 'Intermediate' | 'Expert';
+    interestDomain: string;
+    weeks?: number;
+  },
+) => {
+  try {
+    const job = jobStore.get(jobId);
+    if (!job) throw new Error('Job not found');
 
-const safeStorageRemove = (key: string) => {
-    try {
-        localStorage.removeItem(key);
-    } catch {
-        // Ignore storage-remove failures in restricted browser contexts.
-    }
-};
+    console.log(`[jobService] Starting roadmap generation for job ${jobId}`);
 
-const getApiBase = (): string => {
-    return '/api';
-};
-
-const readToken = async (): Promise<string> => {
-    const { data: { session } } = await supabase.auth.getSession();
-    const token = session?.access_token;
-    if (!token) {
-        throw new Error('Please sign in to continue.');
-    }
-    return token;
-};
-
-const authHeaders = (token: string): Record<string, string> => ({
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${token}`,
-});
-
-const stableHash = (value: string): string => {
-    let hash = 0;
-    for (let i = 0; i < value.length; i++) {
-        hash = (hash << 5) - hash + value.charCodeAt(i);
-        hash |= 0;
-    }
-    return String(hash >>> 0);
-};
-
-const makeRoadmapIdempotencyKey = (
-    skill: string,
-    weeks: string,
-    level: string,
-    profile: UserProfile,
-): string => {
-    const normalized = JSON.stringify({
-        skill: skill.trim().toLowerCase(),
-        weeks: String(weeks || '').trim(),
-        level: String(level || '').trim().toLowerCase(),
-        profile: {
-            academicLevel: profile.academicLevel,
-            stream: profile.stream,
-            academicCourse: profile.academicCourse,
-            focusArea: profile.focusArea,
-            learningStyle: profile.learningStyle,
-            interests: profile.interests,
-            skills: profile.skills,
-        },
+    // Call backend to generate roadmap
+    const response = await fetch(`${BACKEND_URL}/api/roadmap/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     });
-    return `roadmap_${stableHash(normalized)}`;
-};
 
-const parseJson = async <T>(response: Response): Promise<T> => {
-    const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-        throw new Error(String((body as any)?.error || 'Request failed'));
+      throw new Error(`API error: ${response.status} ${response.statusText}`);
     }
-    return body as T;
-};
 
-export const persistWorkflowState = (jobId: string, step: string) => {
-    safeStorageSet(ACTIVE_JOB_ID_KEY, jobId);
-    safeStorageSet(ACTIVE_STEP_KEY, step);
-};
+    const data = await response.json();
 
-export const clearWorkflowState = () => {
-    safeStorageRemove(ACTIVE_JOB_ID_KEY);
-    safeStorageRemove(ACTIVE_STEP_KEY);
-};
+    if (!data.success || !data.roadmap) {
+      throw new Error('Invalid roadmap response');
+    }
 
-export const getPersistedWorkflowState = (): { jobId: string | null; step: string | null } => {
-    return {
-        jobId: safeStorageGet(ACTIVE_JOB_ID_KEY),
-        step: safeStorageGet(ACTIVE_STEP_KEY),
+    console.log(`[jobService] Roadmap generated for job ${jobId}`);
+
+    // Transform to RoadmapData format
+    const roadmapData: RoadmapData = {
+      skill: payload.skill,
+      roadmap: data.roadmap.map((week: any, idx: number) => ({
+        week: week.week || idx + 1,
+        theme: week.theme || `Week ${idx + 1}`,
+        goals: Array.isArray(week.goals) ? week.goals : [],
+        resources: (Array.isArray(week.resources) ? week.resources : []).map((r: string) => ({
+          title: r,
+          searchQuery: r,
+        })),
+        completed: false,
+      })),
+      freePlatforms: [],
+      paidPlatforms: [],
+      books: [],
+      status: 'active',
+      progress: 0,
+      isPublic: false,
     };
-};
 
-export const createRoadmapJob = async (
-    skill: string,
-    weeks: string,
-    level: string,
-    profile: UserProfile,
-): Promise<WorkflowJob> => {
-    const token = await readToken();
-    const idempotencyKey = makeRoadmapIdempotencyKey(skill, weeks, level, profile);
-
-    const response = await fetch(`${getApiBase()}/jobs`, {
-        method: 'POST',
-        headers: authHeaders(token),
-        body: JSON.stringify({
-            type: 'roadmap_generation',
-            idempotencyKey,
-            payload: { skill, weeks, level, profile },
-        }),
-    });
-
-    const data = await parseJson<{ job: WorkflowJob }>(response);
-    persistWorkflowState(data.job.id, 'running');
-    return data.job;
-};
-
-export const runJob = async (jobId: string): Promise<WorkflowJob> => {
-    const token = await readToken();
-    const response = await fetch(`${getApiBase()}/jobs?action=run`, {
-        method: 'POST',
-        headers: authHeaders(token),
-        body: JSON.stringify({ id: jobId }),
-    });
-
-    const data = await parseJson<{ job: WorkflowJob }>(response);
-    return data.job;
-};
-
-export const getJob = async (jobId: string): Promise<WorkflowJob> => {
-    const token = await readToken();
-    const response = await fetch(`${getApiBase()}/jobs?id=${encodeURIComponent(jobId)}`, {
-        method: 'GET',
-        headers: {
-            Authorization: `Bearer ${token}`,
-        },
-    });
-
-    const data = await parseJson<{ job: WorkflowJob }>(response);
-    return data.job;
-};
-
-export const getActiveRoadmapJob = async (): Promise<WorkflowJob | null> => {
-    const token = await readToken();
-    const response = await fetch(`${getApiBase()}/jobs?status=running`, {
-        method: 'GET',
-        headers: {
-            Authorization: `Bearer ${token}`,
-        },
-    });
-
-    const data = await parseJson<{ jobs: WorkflowJob[] }>(response);
-    const running = (data.jobs || []).find((job) => job.type === 'roadmap_generation');
-    if (running) {
-        persistWorkflowState(running.id, 'running');
-        return running;
+    job.status = 'completed';
+    job.roadmap = roadmapData;
+  } catch (error) {
+    console.error(`[jobService] Roadmap generation failed for job ${jobId}:`, error);
+    const job = jobStore.get(jobId);
+    if (job) {
+      job.status = 'failed';
+      job.error = error instanceof Error ? error.message : 'Unknown error';
     }
-
-    return null;
+    throw error;
+  }
 };
 
-export const toRoadmapResult = (job: WorkflowJob<any, any>): RoadmapData | null => {
-    if (job.status !== 'completed' || !job.result) {
-        return null;
-    }
-
-    return job.result as unknown as RoadmapData;
+/**
+ * Run a job (legacy, jobs run immediately now)
+ */
+export const runJob = async (jobId: string) => {
+  const job = jobStore.get(jobId);
+  if (!job) {
+    throw new Error('Job not found');
+  }
+  return { status: job.status };
 };
+
+/**
+ * Get job status
+ */
+export const getJob = async (jobId: string): Promise<RoadmapGenerationJob> => {
+  const job = jobStore.get(jobId);
+  if (!job) {
+    throw new Error('Job not found');
+  }
+  return job;
+};
+
+/**
+ * Get active roadmap job for a user
+ */
+export const getActiveRoadmapJob = async (userId?: string): Promise<RoadmapGenerationJob | null> => {
+  // In production, would query database for user's jobs
+  // For now, return null
+  return null;
+};
+
+/**
+ * Get persisted workflow state
+ */
+export const getPersistedWorkflowState = async (userId?: string): Promise<any> => {
+  // In production, would query database
+  return null;
+};
+
+/**
+ * Clear workflow state
+ */
+export const clearWorkflowState = async (userId?: string) => {
+  return { ok: true };
+};
+
+/**
+ * Transform job result to roadmap format
+ */
+export const toRoadmapResult = (jobResult: RoadmapGenerationJob) => {
+  if (jobResult.status === 'completed' && jobResult.roadmap) {
+    return jobResult.roadmap;
+  }
+  return null;
+};
+
+export default { createRoadmapJob, runJob, getJob };
+

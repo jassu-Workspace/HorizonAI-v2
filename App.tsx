@@ -227,11 +227,15 @@ const App: React.FC = () => {
             // Ignore storage-read failures in restricted browser contexts.
         }
 
-        if (isValidTheme(savedTheme)) {
-            setTheme(savedTheme);
-            if (savedTheme === 'dark') {
-                document.documentElement.classList.add('dark');
-            }
+        // Determine the theme to use
+        const themeToApply: Theme = isValidTheme(savedTheme) ? savedTheme : 'light';
+        setTheme(themeToApply);
+
+        // Always apply the theme to DOM
+        if (themeToApply === 'dark') {
+            document.documentElement.classList.add('dark');
+        } else {
+            document.documentElement.classList.remove('dark');
         }
 
         return () => {
@@ -276,8 +280,8 @@ const App: React.FC = () => {
         const tryResume = async () => {
             if (!userProfile?.id || isCancelled) return;
 
-            const persisted = getPersistedWorkflowState();
-            const localJobId = persisted.jobId;
+            const persisted = await getPersistedWorkflowState(userProfile.id);
+            const localJobId = persisted?.jobId;
 
             if (localJobId) {
                 try {
@@ -323,7 +327,7 @@ const App: React.FC = () => {
             }
 
             try {
-                const active = await getActiveRoadmapJob();
+                const active = await getActiveRoadmapJob(userProfile.id);
                 if (active && !isCancelled) {
                     setActiveRoadmapJobId(active.id);
                     navigate('/loading');
@@ -490,20 +494,22 @@ const App: React.FC = () => {
 
     const handleProfileSubmit = async (profile: UserProfile) => {
         setIsSubmittingForm(true);
-        setUserProfile(profile);
         setErrorMessage('');
-        navigate('/loading');
         try {
+            // Save profile to DB before proceeding
+            await saveProfileFromOnboarding(profile);
+            setUserProfile(profile);
+
             const effectiveSkill = profile.skills || profile.interests;
             if (!effectiveSkill) {
                 setErrorMessage("Please enter at least one skill or interest.");
-                navigate('/create');
+                setIsSubmittingForm(false);
                 return;
             }
             const suggestions = await GeminiService.getSkillSuggestions(profile);
             if (!suggestions || suggestions.length === 0) {
                 setErrorMessage("No skill suggestions could be generated. Please try a different skill or interest.");
-                navigate('/create');
+                setIsSubmittingForm(false);
                 return;
             }
             setSuggestions(suggestions);
@@ -511,7 +517,6 @@ const App: React.FC = () => {
         } catch (error: any) {
             const msg = error?.message || 'Something went wrong. Please try again.';
             setErrorMessage(msg);
-            navigate('/create');
         } finally {
             setIsSubmittingForm(false);
         }
@@ -522,9 +527,6 @@ const App: React.FC = () => {
 
     const handleSelectSkill = (skill: string) => {
         setSelectedSkill(skill);
-        void GeminiService.getRapidAssessment(skill, userProfile.interests || 'General').catch(() => {
-            // Prefetch best-effort only; Configure page handles user-facing errors.
-        });
         navigate('/configure');
     };
 
@@ -539,13 +541,18 @@ const App: React.FC = () => {
 
         setErrorMessage('');
         try {
-            const job = await createRoadmapJob(selectedSkill, weeks, level, userProfile);
-            setActiveRoadmapJobId(job.id);
-            startRoadmapPolling(job.id);
-            await runJob(job.id).catch(() => {
+            const job = await createRoadmapJob({
+                skill: selectedSkill,
+                userLevel: level as 'Beginner' | 'Intermediate' | 'Expert',
+                interestDomain: userProfile.interests || 'General',
+                weeks: Number(weeks) || 12,
+            });
+            setActiveRoadmapJobId(job.jobId);
+            startRoadmapPolling(job.jobId);
+            await runJob(job.jobId).catch(() => {
                 // Job can already be running/completed; polling finalizes UI.
             });
-            await resolveRoadmapJob(job.id);
+            await resolveRoadmapJob(job.jobId);
         } catch (error: any) {
             const message = String(error?.message || 'Roadmap generation failed. Please try again.');
             setErrorMessage(message);
@@ -889,19 +896,47 @@ const App: React.FC = () => {
                         } />
                         <Route path="/suggestions" element={
                             <ProtectedRoute>
-                            <Suggestions suggestions={suggestions} onSelect={handleSelectSkill} onRefresh={handleRefresh} />
+                            {suggestions.length > 0 ? (
+                                <Suggestions suggestions={suggestions} onSelect={handleSelectSkill} onRefresh={handleRefresh} />
+                            ) : (
+                                <div className="flex items-center justify-center py-12 px-4">
+                                    <div className="glass-card max-w-lg w-full p-8 text-center">
+                                        <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">No suggestions yet</h2>
+                                        <p className="text-slate-600 dark:text-slate-300 mb-6">
+                                            Start with a skill and interest to generate personalized suggestions.
+                                        </p>
+                                        <button onClick={() => navigate('/create')} className="dynamic-button">
+                                            Go to Skill Input
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                             </ProtectedRoute>
                         } />
                         <Route path="/configure" element={
                             <ProtectedRoute>
-                            <ConfigureRoadmap 
-                                skillName={selectedSkill} 
-                                interestDomain={userProfile.interests} 
-                                onGenerate={handleGenerateRoadmap} 
-                                onBack={() => navigate('/suggestions')} 
-                                onTakeQuiz={handleTakeSkillQuiz} 
-                                determinedSkillLevel={determinedSkillLevel}
-                            />
+                            {selectedSkill ? (
+                                <ConfigureRoadmap 
+                                    skillName={selectedSkill} 
+                                    interestDomain={userProfile.interests} 
+                                    onGenerate={handleGenerateRoadmap} 
+                                    onBack={() => navigate('/suggestions')} 
+                                    onTakeQuiz={handleTakeSkillQuiz} 
+                                    determinedSkillLevel={determinedSkillLevel}
+                                />
+                            ) : (
+                                <div className="flex items-center justify-center py-12 px-4">
+                                    <div className="glass-card max-w-lg w-full p-8 text-center">
+                                        <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">Select a skill first</h2>
+                                        <p className="text-slate-600 dark:text-slate-300 mb-6">
+                                            Please choose a skill from suggestions to start your assessment.
+                                        </p>
+                                        <button onClick={() => navigate('/suggestions')} className="dynamic-button">
+                                            Back to Suggestions
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                             </ProtectedRoute>
                         } />
                         <Route path="/roadmap" element={
@@ -914,8 +949,25 @@ const App: React.FC = () => {
                                     onFeatureClick={handleFeatureClick} 
                                     setRoadmapData={setRoadmapData} 
                                 />
-                            ) : <Navigate to="/create" />
-                            }
+                            ) : (
+                                <div className="flex items-center justify-center py-12 px-4">
+                                    <div className="glass-card max-w-lg w-full p-8 text-center">
+                                        {activeRoadmapJobId ? (
+                                            <Loader message="Finalizing your roadmap..." subMessages={['Generating learning plan...', 'Adding resources...', 'Almost ready...']} />
+                                        ) : (
+                                            <>
+                                                <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">No roadmap yet</h2>
+                                                <p className="text-slate-600 dark:text-slate-300 mb-6">
+                                                    Create a new roadmap to view your personalized learning path.
+                                                </p>
+                                                <button onClick={() => navigate('/create')} className="dynamic-button">
+                                                    Start New Roadmap
+                                                </button>
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
                             </ProtectedRoute>
                         } />
                         <Route path="/loading" element={<ProtectedRoute><Loader message="Working our magic..." /></ProtectedRoute>} />

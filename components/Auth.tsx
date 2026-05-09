@@ -95,7 +95,7 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
         }
     };
 
-    if (!isSupabaseConfigured) {
+    if (!isSupabaseConfigured()) {
         return (
             <div className="flex justify-center items-center min-h-[60vh]">
                 <div className="glass-card p-8 w-full max-w-lg text-center border-l-4 border-amber-500">

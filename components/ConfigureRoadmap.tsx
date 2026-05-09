@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { getRapidAssessment } from '../services/geminiService';
+import * as assessmentApiService from '../services/assessmentApiService';
 import {
   calculateAssessmentScore,
   getWeeksForLevel,
@@ -71,10 +71,10 @@ const ConfigureRoadmap: React.FC<ConfigureRoadmapProps & { interestDomain: strin
         throw new Error('Interest domain is required');
       }
 
-      console.log('[ConfigureRoadmap] Calling getRapidAssessment...');
-      // Load assessment from service
-      const quiz = await getRapidAssessment(skillName, interestDomain);
-      console.log('[ConfigureRoadmap] getRapidAssessment returned', { questionsCount: quiz?.length });
+      console.log('[ConfigureRoadmap] Calling backend assessment API...');
+      // Load assessment from backend API service (which includes dataset context)
+      const quiz = await assessmentApiService.generateAssessment(skillName, interestDomain);
+      console.log('[ConfigureRoadmap] Backend returned', { questionsCount: quiz?.length });
 
       if (loadId !== activeLoadRef.current || !mountedRef.current) {
         console.log('[ConfigureRoadmap] Load was superseded or component unmounted');
@@ -152,26 +152,33 @@ const ConfigureRoadmap: React.FC<ConfigureRoadmapProps & { interestDomain: strin
     }
   };
 
-  const finishAssessment = () => {
+  const finishAssessment = async () => {
     if (isCompleted) return;
     setIsCompleted(true);
 
     try {
-      // Use unified scoring function from assessment service
-      const result = calculateAssessmentScore(questions, selectedAnswers);
+      // Score the assessment via backend
+      console.log('[ConfigureRoadmap] Scoring assessment via backend');
+      const scoringResult = await assessmentApiService.scoreAssessment(
+        skillName,
+        questions,
+        selectedAnswers,
+        interestDomain,
+      );
+
+      console.log('[ConfigureRoadmap] Assessment scored:', scoringResult);
 
       logAssessmentError('[Assessment] Score calculated', null, {
         skillName,
-        score: result.score,
-        maxScore: result.maxScore,
-        percentage: result.percentage,
-        level: result.level,
+        score: scoringResult.score,
+        level: scoringResult.level,
+        feedback: scoringResult.feedback,
       });
 
-      // Start roadmap generation
-      void startRoadmapGeneration(String(getWeeksForLevel(result.level)), result.level, {
+      // Start roadmap generation with the determined level
+      void startRoadmapGeneration(String(getWeeksForLevel(scoringResult.level)), scoringResult.level, {
         background: true,
-        scoreData: result,
+        feedback: scoringResult.feedback,
       });
     } catch (error: unknown) {
       const message =
@@ -179,11 +186,13 @@ const ConfigureRoadmap: React.FC<ConfigureRoadmapProps & { interestDomain: strin
           ? error.message
           : 'Could not process assessment results. Please try again.';
 
+      console.error('[ConfigureRoadmap] Assessment scoring failed:', error);
       logAssessmentError('finishAssessment', error);
 
       if (mountedRef.current) {
         setRoadmapGenerationError(message);
         setIsRoadmapGenerating(false);
+        setIsCompleted(false);
       }
     }
   };

@@ -17,7 +17,8 @@
     "typecheck": "tsc --noEmit",
     "build": "vite build",
     "build:ci": "npm run check:vercel-functions && npm run typecheck && npm run build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "copy-datasets": "node scripts/copy-datasets.js"
   },
   "dependencies": {
     "@remix-run/router": "1.23.2",
@@ -31,6 +32,7 @@
     "compression": "^1.8.1",
     "concurrently": "^8.2.2",
     "cors": "^2.8.5",
+    "csv-parse": "^6.2.1",
     "dotenv": "^17.3.1",
     "express": "^4.18.2",
     "framer-motion": "^12.38.0",
